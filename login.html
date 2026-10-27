@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>天网 SKYNET · 身份核验</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ccircle cx='24' cy='24' r='10' fill='none' stroke='%234fffd7' stroke-width='2'/%3E%3Cellipse cx='24' cy='24' rx='21' ry='8' fill='none' stroke='%234fffd7' stroke-width='1.2' transform='rotate(-28 24 24)'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="login.css">
+</head>
+<body>
+
+<canvas id="gateCanvas" aria-hidden="true"></canvas>
+<div class="gate-veil"></div>
+<div class="gate-grid"></div>
+<div class="gate-scan"></div>
+
+<header class="gate-top">
+  <div class="gate-brand">
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <circle cx="24" cy="24" r="9.5" fill="none" stroke="currentColor" stroke-width="1.1"/>
+      <ellipse cx="24" cy="24" rx="21" ry="7.6" fill="none" stroke="currentColor" stroke-width=".9" stroke-opacity=".7" transform="rotate(-28 24 24)"/>
+      <ellipse cx="24" cy="24" rx="21" ry="7.6" fill="none" stroke="currentColor" stroke-width=".7" stroke-opacity=".25" transform="rotate(34 24 24)"/>
+      <circle cx="41.5" cy="13.5" r="1.7" fill="currentColor"/>
+    </svg>
+    <div><b>天网</b><span>SKYNET</span></div>
+  </div>
+  <div class="gate-meta"><span>HAAVK // FIELD OPERATION</span><i></i><span>GTI SECURE GATEWAY · NODE 07</span></div>
+  <div class="gate-online"><i></i>GATEWAY ONLINE</div>
+</header>
+
+<main class="gate-main">
+  <section class="gate-copy">
+    <div class="gate-kicker"><span>03</span>IDENTITY VERIFICATION / 身份核验</div>
+    <h1>进入天网<br><em>需要授权</em></h1>
+    <p>这里连接着地球观测、全球事件与本地网络。<br>请验证操作员身份，所有访问将被记录并审计。</p>
+
+    <div class="gate-orbit" aria-hidden="true">
+      <div class="ring r1"></div>
+      <div class="ring r2"></div>
+      <div class="ring r3"></div>
+      <div class="core"><i></i><span>SKYNET<br><em>ACCESS CORE</em></span></div>
+      <div class="orbit-dot d1"></div>
+      <div class="orbit-dot d2"></div>
+    </div>
+
+    <div class="gate-console">
+      <div class="console-head"><span>SECURE BOOT LOG</span><em id="gateClock">--:--:--</em></div>
+      <pre id="gateConsole"></pre>
+    </div>
+
+    <div class="gate-stats">
+      <div><b>12</b><span>ORBITAL NODES</span></div>
+      <div><b>08</b><span>GROUND STATIONS</span></div>
+      <div><b>23</b><span>LIVE EVENTS</span></div>
+      <div><b>AES-256</b><span>UPLINK</span></div>
+    </div>
+  </section>
+
+  <section class="gate-panel" id="gatePanel">
+    <div class="gate-panel-head">
+      <span>ACCESS CONTROL</span>
+      <em>LEVEL OMEGA</em>
+    </div>
+
+    <form id="loginForm" novalidate autocomplete="off">
+      <div class="gate-field">
+        <label for="user">操作员账号 <em>OPERATOR ID</em></label>
+        <input id="user" name="user" type="text" autocomplete="off" spellcheck="false" value="EDY_POWERQ" placeholder="EDY_POWERQ" required>
+      </div>
+      <div class="gate-field">
+        <label for="pass">访问口令 <em>PASSPHRASE</em></label>
+        <div class="gate-password">
+          <input id="pass" name="pass" type="password" autocomplete="new-password" spellcheck="false" placeholder="••••••" required>
+          <button type="button" id="togglePass" aria-label="显示口令">显示</button>
+        </div>
+      </div>
+
+      <div class="gate-hint">口令区分大小写 · 不要带空格 · 浏览器自动填充时请重新输入</div>
+      <div class="gate-error" id="gateError" role="alert"></div>
+
+      <button class="gate-submit" id="gateSubmit" type="submit">
+        <span>核验并接入</span><i>→</i>
+      </button>
+    </form>
+
+    <div class="gate-panel-foot">
+      <span>SESSION 12H</span>
+      <button type="button" id="voiceToggle" class="voice-toggle">VOICE ON</button>
+      <span>AES-256 / TLS</span>
+    </div>
+
+    <div class="gate-verify" id="gateVerify" aria-hidden="true">
+      <div class="verify-ring"><i></i></div>
+      <div class="verify-title">核验通过</div>
+      <div class="verify-user" id="verifyUser">EDY_POWERQ</div>
+      <pre id="verifyLog"></pre>
+    </div>
+  </section>
+</main>
+
+<footer class="gate-foot">
+  <span>SKYNET SECURE GATEWAY · BUILD 4.2.7</span>
+  <span class="gate-foot-center">UNAUTHORIZED ACCESS IS PROHIBITED</span>
+  <span id="gateHost">EDY_POWERQ / SECURE GATEWAY</span>
+</footer>
+
+<script src="vendor/textures.js"></script>
+<script src="login.js"></script>
+</body>
+</html>

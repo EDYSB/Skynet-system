@@ -1,0 +1,13 @@
+# 本地备份 / 临时产物
+.backup-*/
+Thumbs.db
+desktop.ini
+*.log
+
+# 运行时输出（lab.js 生成）
+vendor/sqlmap-output/
+node_modules/
+
+# 编辑器
+.vscode/
+.idea/

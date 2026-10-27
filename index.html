@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>天网 SKYNET · 地球系统观测网络</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ccircle cx='24' cy='24' r='10' fill='none' stroke='%236ef2d0' stroke-width='2'/%3E%3Cellipse cx='24' cy='24' rx='21' ry='8' fill='none' stroke='%236ef2d0' stroke-width='1.2' transform='rotate(-28 24 24)'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="theme-light.css">
+<link rel="stylesheet" href="terminal.css">
+<link rel="stylesheet" href="theme-unified.css">
+</head>
+<body>
+
+<!-- ================= 启动 ================= -->
+<div class="boot" id="boot">
+  <div class="boot-stars"></div>
+  <div class="boot-card">
+    <svg class="boot-orbit" viewBox="0 0 120 120" aria-hidden="true">
+      <circle cx="60" cy="60" r="26" fill="none" stroke="currentColor" stroke-opacity=".55"/>
+      <circle cx="60" cy="60" r="26" fill="none" stroke="currentColor" stroke-opacity=".12" stroke-dasharray="2 6"/>
+      <ellipse cx="60" cy="60" rx="52" ry="19" fill="none" stroke="currentColor" stroke-opacity=".5" transform="rotate(-26 60 60)"/>
+      <ellipse cx="60" cy="60" rx="52" ry="19" fill="none" stroke="currentColor" stroke-opacity=".18" stroke-dasharray="3 7" transform="rotate(32 60 60)"/>
+      <circle class="boot-sat" cx="108" cy="49" r="2.6" fill="currentColor"/>
+      <circle cx="60" cy="60" r="3" fill="currentColor"/>
+    </svg>
+    <div class="boot-title">天网<span>SKYNET</span></div>
+    <div class="boot-sub">地球系统观测网络 · EARTH OBSERVATION NETWORK</div>
+    <pre class="boot-log" id="bootLog"></pre>
+    <div class="boot-bar"><i id="bootBar"></i></div>
+    <div class="boot-foot">
+      <span>北京 / 全球节点</span>
+      <span>BUILD 4.2.7</span>
+      <span class="boot-skip" id="bootSkip">ESC 跳过</span>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 主界面 ================= -->
+<div class="app" id="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-orbit" viewBox="0 0 48 48" aria-hidden="true">
+        <circle cx="24" cy="24" r="9.5" fill="none" stroke="currentColor" stroke-width="1.1"/>
+        <ellipse cx="24" cy="24" rx="21" ry="7.6" fill="none" stroke="currentColor" stroke-width=".9" stroke-opacity=".7" transform="rotate(-28 24 24)"/>
+        <ellipse cx="24" cy="24" rx="21" ry="7.6" fill="none" stroke="currentColor" stroke-width=".7" stroke-opacity=".25" transform="rotate(34 24 24)"/>
+        <circle cx="41.5" cy="13.5" r="1.7" fill="currentColor"/>
+      </svg>
+      <div class="brand-text">
+        <div class="brand-line"><b>天网</b><span>SKYNET</span></div>
+        <small>地球系统观测网络 · EARTH OBSERVATION NETWORK</small>
+      </div>
+    </div>
+
+    <nav class="app-modes" aria-label="系统模式">
+      <button class="app-mode active" data-app-mode="earth"><i>01</i>行星观测</button>
+      <button class="app-mode" data-app-mode="cyber"><i>02</i>网络空间</button>
+      <button class="app-mode" data-app-mode="terminal"><i>03</i>终端</button>
+    </nav>
+
+    <div class="mission">
+      <span class="mission-kicker" id="missionKicker">GLOBAL WATCH / 全球守望</span>
+      <div class="mission-name" id="missionName">地球脉动 <em>PLANET PULSE</em></div>
+      <div class="mission-meta">
+        <span class="live"><i></i>LIVE</span>
+        <span id="missionTime">T+ 04:12:33</span>
+        <span id="liveStatus" class="live-status"><i></i>连接实时数据…</span>
+      </div>
+    </div>
+
+    <div class="top-right">
+      <div class="clockbox">
+        <div class="clock" id="clock">22:40:17</div>
+        <div class="clock-zone"><span id="dateLabel">2026.10.27</span> · UTC+08 北京时间</div>
+      </div>
+      <div class="v-divider"></div>
+      <div class="node">
+        <b id="sessionUser">EDY_POWERQ</b>
+        <span>北京节点 · 39.9042°N</span>
+        <i class="node-dot"></i>
+      </div>
+      <button class="session-lock" id="lockSession" title="锁定会话" aria-label="锁定会话">⏻</button>
+    </div>
+  </header>
+
+  <main class="layout" id="earthScreen">
+
+    <!-- ================= 左栏 ================= -->
+    <aside class="col col-left">
+
+      <section class="panel vitals">
+        <div class="panel-head">
+          <div class="panel-title">行星体征<span>PLANETARY VITALS</span></div>
+          <div class="head-note"><i></i>公开基线</div>
+        </div>
+        <div class="vital-list">
+          <div class="vital" style="--c:#ffc46b">
+            <div class="vital-top">
+              <span class="v-name">大气碳浓度<em>CO₂</em></span>
+              <span class="v-val">424.6<small>ppm</small></span>
+            </div>
+            <div class="vital-bottom">
+              <span class="trend up">↑ 2.4 / 年</span>
+              <svg class="spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true">
+                <path class="spark-area" d="M0 25 L0 21 L12 20 L24 20 L36 18 L48 17 L60 15 L72 13 L84 11 L96 9 L108 7 L120 4 L120 25 Z"/>
+                <polyline points="0,21 12,20 24,20 36,18 48,17 60,15 72,13 84,11 96,9 108,7 120,4"/>
+                <circle cx="120" cy="4" r="1.8"/>
+              </svg>
+            </div>
+          </div>
+
+          <div class="vital" style="--c:#ff8b76">
+            <div class="vital-top">
+              <span class="v-name">全球温度异常<em>TEMP</em></span>
+              <span class="v-val">+1.35<small>°C</small></span>
+            </div>
+            <div class="vital-bottom">
+              <span class="trend up">↑ 0.08 / 十年</span>
+              <svg class="spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true">
+                <path class="spark-area" d="M0 25 L0 22 L15 21 L30 19 L45 20 L60 16 L75 15 L90 12 L105 9 L120 6 L120 25 Z"/>
+                <polyline points="0,22 15,21 30,19 45,20 60,16 75,15 90,12 105,9 120,6"/>
+                <circle cx="120" cy="6" r="1.8"/>
+              </svg>
+            </div>
+          </div>
+
+          <div class="vital" style="--c:#0f9f8a">
+            <div class="vital-top">
+              <span class="v-name">海平面上升<em>SEA LEVEL</em></span>
+              <span class="v-val">+105.2<small>mm</small></span>
+            </div>
+            <div class="vital-bottom">
+              <span class="trend up">↑ 4.3 / 年</span>
+              <svg class="spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true">
+                <path class="spark-area" d="M0 25 L0 23 L15 22 L30 22 L45 20 L60 18 L75 16 L90 14 L105 10 L120 7 L120 25 Z"/>
+                <polyline points="0,23 15,22 30,22 45,20 60,18 75,16 90,14 105,10 120,7"/>
+                <circle cx="120" cy="7" r="1.8"/>
+              </svg>
+            </div>
+          </div>
+
+          <div class="vital" style="--c:#a9e7ff">
+            <div class="vital-top">
+              <span class="v-name">北极海冰<em>SEA ICE</em></span>
+              <span class="v-val">4.28<small>M km²</small></span>
+            </div>
+            <div class="vital-bottom">
+              <span class="trend down">↓ 6.1% / 十年</span>
+              <svg class="spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true">
+                <path class="spark-area" d="M0 25 L0 7 L15 8 L30 9 L45 8 L60 12 L75 13 L90 15 L105 18 L120 19 L120 25 Z"/>
+                <polyline points="0,7 15,8 30,9 45,8 60,12 75,13 90,15 105,18 120,19"/>
+                <circle cx="120" cy="19" r="1.8"/>
+              </svg>
+            </div>
+          </div>
+
+          <div class="vital" style="--c:#1f5eff">
+            <div class="vital-top">
+              <span class="v-name">海洋热含量<em>OCEAN HEAT</em></span>
+              <span class="v-val">16.4<small>ZJ</small></span>
+            </div>
+            <div class="vital-bottom">
+              <span class="trend up">↑ 0.9 / 年</span>
+              <svg class="spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true">
+                <path class="spark-area" d="M0 25 L0 20 L15 19 L30 17 L45 18 L60 14 L75 12 L90 11 L105 7 L120 5 L120 25 Z"/>
+                <polyline points="0,20 15,19 30,17 45,18 60,14 75,12 90,11 105,7 120,5"/>
+                <circle cx="120" cy="5" r="1.8"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div class="vital-foot">
+          <span>数据源 · 全球观测站网</span>
+          <span id="vitalSync">同步于 22:40</span>
+        </div>
+      </section>
+
+      <section class="panel network">
+        <div class="panel-head">
+          <div class="panel-title">观测网络<span>OBSERVATION GRID</span></div>
+          <div class="head-note"><i></i>12 / 12</div>
+        </div>
+        <div class="network-body">
+          <div class="constellation" aria-hidden="true">
+            <svg viewBox="0 0 260 72" preserveAspectRatio="xMidYMid meet">
+              <ellipse cx="130" cy="36" rx="112" ry="25" fill="none" stroke="#1f5eff" stroke-opacity=".18"/>
+              <ellipse cx="130" cy="36" rx="78" ry="34" fill="none" stroke="#1f5eff" stroke-opacity=".12" transform="rotate(-14 130 36)"/>
+              <ellipse cx="130" cy="36" rx="48" ry="15" fill="none" stroke="#0f9f8a" stroke-opacity=".35" transform="rotate(18 130 36)"/>
+              <circle cx="130" cy="36" r="16" fill="none" stroke="#1f5eff" stroke-opacity=".45"/>
+              <circle cx="130" cy="36" r="16" fill="#1f5eff" fill-opacity=".06"/>
+              <circle cx="130" cy="36" r="2.4" fill="#1f5eff"/>
+              <circle class="sat-dot s1" cx="242" cy="36" r="2.2" fill="#1f5eff"/>
+              <circle class="sat-dot s2" cx="66" cy="14" r="2" fill="#0f9f8a"/>
+              <circle class="sat-dot s3" cx="150" cy="62" r="1.8" fill="#ffc46b"/>
+              <circle class="sat-dot s4" cx="94" cy="24" r="1.6" fill="#1f5eff"/>
+            </svg>
+          </div>
+          <div class="net-stats">
+            <div><b>12<small>/12</small></b><span>在轨卫星</span></div>
+            <div><b>08<small>/08</small></b><span>地面站</span></div>
+            <div><b>99.7<small>%</small></b><span>全球覆盖</span></div>
+            <div><b>0.8<small>s</small></b><span>数据延迟</span></div>
+          </div>
+          <div class="coverage">
+            <div class="coverage-top"><span>观测覆盖率</span><b>99.7%</b></div>
+            <div class="coverage-bar"><i style="width:99.7%"></i></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel gaia">
+        <div class="panel-head">
+          <div class="panel-title">盖亚推演<span>GAIA FORECAST</span></div>
+          <div class="head-code">ONLINE</div>
+        </div>
+        <div class="gaia-body">
+          <div class="gaia-orb">
+            <svg viewBox="0 0 110 110" aria-hidden="true">
+              <circle class="g-ring r1" cx="55" cy="55" r="45"/>
+              <circle class="g-ring r2" cx="55" cy="55" r="34"/>
+              <circle class="g-ring r3" cx="55" cy="55" r="24"/>
+              <g class="g-scan"><path d="M55 55 L55 10 A45 45 0 0 1 93 32 Z"/></g>
+              <circle cx="55" cy="55" r="3.4" fill="#1f5eff"/>
+            </svg>
+            <div class="gaia-core">盖亚<small>GAIA</small></div>
+          </div>
+          <div class="gaia-state"><i></i>模型运行中 · 置信度 91%</div>
+          <p class="gaia-msg" id="gaiaMsg"><span></span><i class="caret"></i></p>
+          <div class="gaia-metrics">
+            <div><span>推演周期</span><b>72<small>H</small></b></div>
+            <div><span>数据源</span><b>12</b></div>
+            <div><span>模型版本</span><b>G-4.2</b></div>
+          </div>
+          <div class="gaia-outlook">
+            <div class="outlook-top"><span>72H 风险趋势</span><b>偏高 <em>+18%</em></b></div>
+            <div class="outlook-bars" aria-hidden="true">
+              <i style="--h:22%"></i><i style="--h:28%"></i><i style="--h:25%"></i><i style="--h:34%"></i>
+              <i style="--h:31%"></i><i style="--h:40%"></i><i style="--h:46%"></i><i style="--h:43%"></i>
+              <i style="--h:52%"></i><i style="--h:57%"></i><i style="--h:63%"></i><i style="--h:70%"></i>
+            </div>
+            <div class="outlook-axis"><span>现在</span><span>+24H</span><span>+48H</span><span>+72H</span></div>
+          </div>
+          <div class="gaia-foot">
+            <span>推演编号 #GAIA-1027-07</span>
+            <span>迭代 1.4M</span>
+          </div>
+        </div>
+      </section>
+
+    </aside>
+
+    <!-- ================= 地球舞台 ================= -->
+    <section class="stage" id="stage">
+      <div class="stage-grid"></div>
+      <div class="orbit-ui" aria-hidden="true">
+        <div class="orbit-ring a"></div>
+        <div class="orbit-ring b"></div>
+        <div class="orbit-ring c"></div>
+      </div>
+      <canvas id="globeCanvas"></canvas>
+      <div class="map-view" id="mapView"></div>
+      <div class="stage-vignette"></div>
+      <div class="stage-frame" aria-hidden="true">
+        <i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i>
+      </div>
+
+      <div class="stage-top">
+        <div class="stage-title">
+          <span>EARTH</span>地球<em>行星编号 03</em>
+        </div>
+        <div class="stage-right">
+          <div class="view-switch" role="group" aria-label="地球视图">
+            <button class="view-btn active" data-stage-view="globe">3D 地球</button>
+            <button class="view-btn" data-stage-view="map">地图</button>
+          </div>
+          <div class="stage-view" id="stageView">
+            <b>观测视角 03</b>
+            <span>ALT 35,786 KM · 东经 105° 上空</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="map-overlay" id="mapOverlay">
+        <div class="map-toolbar">
+          <div class="map-layer-group" role="group" aria-label="地图图层">
+            <button class="map-layer active" data-map-layer="sat">卫星</button>
+            <button class="map-layer" data-map-layer="street">街道</button>
+            <button class="map-layer" data-map-layer="gibs">实时卫星</button>
+            <button class="map-layer" data-map-layer="rain">降水</button>
+          </div>
+          <button class="map-tool" id="mapReset">全球</button>
+        </div>
+        <div class="map-status" id="mapStatus"><i></i>实时事件载入中…</div>
+        <div class="map-coordbar">
+          <span id="mapCoords">25.00°N 118.00°E</span>
+          <span id="mapZoom">Z 03</span>
+          <span id="mapUpdated">--</span>
+          <span class="map-attrib">© 高德地图 · NASA GIBS · RainViewer</span>
+        </div>
+      </div>
+
+      <div class="lat-scale" aria-hidden="true">
+        <span>60°N</span><i></i><span>30°N</span><i></i><span>0°</span><i></i><span>30°S</span><i></i><span>60°S</span>
+      </div>
+
+      <div class="stage-side" aria-hidden="true">
+        <span>轨道高度 <b>550 KM</b></span>
+        <span>倾角 <b>51.6°</b></span>
+        <span>周期 <b>95 MIN</b></span>
+      </div>
+
+      <div class="event-layer" id="eventLayer"></div>
+
+      <div class="stage-bottom">
+        <div class="geo-readout">
+          <b id="centerLon">105.0°E</b>
+          <span>视场中心 / VIEW CENTER</span>
+        </div>
+        <div class="stage-hint"><i></i>拖动旋转 · 滚轮缩放</div>
+        <div class="stage-stats">
+          <span><b>12</b> 在轨卫星</span>
+          <span><b>08</b> 地面站</span>
+          <span><b>99.7%</b> 覆盖</span>
+        </div>
+      </div>
+
+      <div class="stage-loading" id="stageLoading">正在建立地球全息投影…</div>
+    </section>
+
+    <!-- ================= 右栏 ================= -->
+    <aside class="col col-right">
+
+      <section class="panel feeds">
+        <div class="panel-head">
+          <div class="panel-title">观测画面<span>SATELLITE FEED</span></div>
+          <div class="head-note"><span class="feed-off-tag">NO SIGNAL</span></div>
+        </div>
+        <div class="feed feed-a">
+          <canvas id="feedA" width="480" height="200"></canvas>
+          <div class="feed-scan"></div>
+          <div class="feed-nosignal a"><b>NO SIGNAL</b><span>无信号 · 下行业务未建立</span></div>
+          <div class="feed-hud top">
+            <span class="feed-off"><i></i>OFFLINE</span>
+            <span>HIMAWARI-9 · 红外</span>
+          </div>
+          <div class="feed-hud bottom">
+            <span>西北太平洋 · 18.4°N 132.6°E · 下行中断</span>
+            <span id="feedTimeA">22:40:17</span>
+          </div>
+        </div>
+        <div class="feed feed-b">
+          <canvas id="feedB" width="480" height="200"></canvas>
+          <div class="feed-scan"></div>
+          <div class="feed-nosignal b"><b>NO SIGNAL</b><span>无信号 · 光学载荷待机</span></div>
+          <div class="feed-hud top">
+            <span class="feed-off"><i></i>STANDBY</span>
+            <span>SENTINEL-2 · 光学</span>
+          </div>
+          <div class="feed-hud bottom">
+            <span>斯瓦尔巴群岛 · 78.2°N 15.6°E · 无过境</span>
+            <span id="feedTimeB">22:40:17</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel dossier" id="dossier">
+        <div class="panel-head">
+          <div class="panel-title">事件档案<span>EVENT DOSSIER</span></div>
+          <div class="ev-count" id="evCount">载入实时事件…</div>
+        </div>
+        <div class="dossier-body">
+          <div class="ev-head">
+            <span class="ev-id" id="evId">EV-01</span>
+            <div class="ev-title">
+              <h3 id="evName">台风 白鹿</h3>
+              <p id="evEn">TYPHOON BAILU · 热带气旋</p>
+            </div>
+            <span class="ev-status" id="evStatus">活跃</span>
+          </div>
+
+          <div class="ev-coord">
+            <span>事件坐标 / COORD</span>
+            <b id="evCoord">18.4°N / 132.6°E</b>
+          </div>
+
+          <div class="ev-stats" id="evStats"></div>
+
+          <p class="ev-note" id="evNote">路径指向西北，预计 72 小时内擦过菲律宾北部，外围云系已影响台湾以东海域。</p>
+
+          <div class="ev-source">
+            <span id="evSource">数据源 · 连接中</span>
+            <a id="evLink" class="ev-link" href="#" target="_blank" rel="noopener" hidden>原始数据 ↗</a>
+          </div>
+
+          <div class="conf">
+            <span>数据置信度</span>
+            <div class="conf-bar"><i id="evConfBar" style="width:96%"></i></div>
+            <b id="evConfVal">96%</b>
+          </div>
+
+          <div class="ev-actions">
+            <button class="btn primary" id="trackBtn" aria-pressed="false"><i></i>持续追踪</button>
+            <button class="btn" id="locateBtn">定位视角</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel log">
+        <div class="panel-head">
+          <div class="panel-title">全球事件流<span>GLOBAL EVENTS</span></div>
+          <div class="log-head-actions">
+            <span class="live"><i></i>LIVE</span>
+            <button class="icon-btn" id="refreshLive" title="刷新实时数据" aria-label="刷新实时数据">↻</button>
+          </div>
+        </div>
+        <ul class="log-list" id="logList"></ul>
+      </section>
+
+    </aside>
+  </main>
+
+  <!-- ================= 网络空间模式 ================= -->
+  <main class="cyber-layout" id="cyberScreen" hidden>
+    <aside class="col cyber-left">
+      <section class="panel traffic-panel">
+        <div class="panel-head">
+          <div class="panel-title">实时吞吐<span>TRAFFIC</span></div>
+          <div class="head-note" id="probeStatus"><i></i>合成流量</div>
+        </div>
+        <div class="traffic-body">
+          <div class="traffic-main"><b id="thrMbps">0.0</b><span>Mbps</span><em id="thrTrend">--</em></div>
+          <div class="traffic-split">
+            <span>下行 <b id="thrDown">0.0</b> Mbps</span>
+            <span>上行 <b id="thrUp">0.0</b> Mbps</span>
+          </div>
+          <canvas id="trafficChart" width="560" height="190"></canvas>
+          <div class="traffic-meta">
+            <span>PPS <b id="ppsVal">--</b></span>
+            <span>会话 <b id="flowVal">--</b></span>
+            <span>丢包 <b id="lossVal">--</b></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel protocol-panel">
+        <div class="panel-head">
+          <div class="panel-title">本机端口<span>LOCAL TCP MIX</span></div>
+          <div class="head-code">EST.</div>
+        </div>
+        <div class="protocol-body" id="protocolBody">
+          <div class="proto-row" data-proto="HTTPS"><span>HTTPS</span><div><i style="width:46%"></i></div><b>46%</b></div>
+          <div class="proto-row" data-proto="TCP"><span>TCP</span><div><i style="width:18%"></i></div><b>18%</b></div>
+          <div class="proto-row" data-proto="DNS"><span>DNS</span><div><i style="width:14%"></i></div><b>14%</b></div>
+          <div class="proto-row" data-proto="QUIC"><span>QUIC</span><div><i style="width:12%"></i></div><b>12%</b></div>
+          <div class="proto-row" data-proto="UDP"><span>UDP</span><div><i style="width:7%"></i></div><b>7%</b></div>
+          <div class="proto-row" data-proto="OTHER"><span>其他</span><div><i style="width:3%"></i></div><b>3%</b></div>
+        </div>
+      </section>
+
+      <section class="panel link-panel">
+        <div class="panel-head">
+          <div class="panel-title">本机链路<span>LOCAL LINK</span></div>
+          <div class="head-note" id="probeLink"><i></i>检测中</div>
+        </div>
+        <div class="link-body">
+          <div class="link-grid">
+            <div><span>数据刷新</span><b id="apiLatency">--</b></div>
+            <div><span>下行能力</span><b id="netDownlink">--</b></div>
+            <div><span>连接类型</span><b id="netType">--</b></div>
+            <div><span>在线状态</span><b id="netOnline">--</b></div>
+          </div>
+          <div class="link-adapter" id="adapterInfo">本机探针未连接 · 当前为合成演示</div>
+          <p class="link-note">本机网卡计数由本地探针读取；未启动探针时使用合成流量演示。</p>
+        </div>
+      </section>
+    </aside>
+
+    <section class="cyber-stage" id="cyberStage">
+      <canvas id="netMapCanvas"></canvas>
+      <div class="cyber-grid"></div>
+      <div class="cyber-top">
+        <div class="stage-title"><span>CYBER</span>全球网络<em>NETWORK FABRIC</em></div>
+        <div class="cyber-live" id="cyberLive"><i></i>LIVE FEED</div>
+      </div>
+      <div class="cyber-legend">
+        <span><i class="lg ok"></i>正常</span>
+        <span><i class="lg warn"></i>异常</span>
+        <span><i class="lg bad"></i>攻击</span>
+      </div>
+      <div class="cyber-map-controls">
+        <button id="cyberZoomIn" title="放大" aria-label="放大">+</button>
+        <button id="cyberZoomOut" title="缩小" aria-label="缩小">−</button>
+        <button id="cyberZoomReset" title="复位" aria-label="复位">⌖</button>
+        <button id="cyberTrackBtn" class="track-btn" title="持续追踪实时 BGP 事件">TRACK</button>
+      </div>
+      <div class="cyber-track-info" id="cyberTrackInfo">TRACK OFF · 滚轮缩放 / 拖动平移</div>
+      <div class="cyber-bgp" id="cyberBgp">
+        <span class="cyber-bgp-tag">BGP</span>
+        <b id="cyberBgpPrefix">awaiting RIPE RIS…</b>
+        <span id="cyberBgpDetail">live stream</span>
+      </div>
+      <div class="cyber-bottom">
+        <div class="cyber-metrics">
+          <div><b id="nodesOnline">32</b><span>在线节点</span></div>
+          <div><b id="activeFlows">18.2K</b><span>活跃流</span></div>
+          <div><b id="attacksBlocked">42</b><span>情报命中</span></div>
+          <div><b id="uptimeVal">99.98%</b><span>链路可用率</span></div>
+        </div>
+        <div class="cyber-hint" id="cyberHint">真实 BGP / 威胁情报 / 本机连接 · 拓扑为示意</div>
+      </div>
+      <div class="attack-toast" id="attackToast"><span>DDoS</span><b>法兰克福节点</b><em>42.6 Gbps</em></div>
+    </section>
+
+    <aside class="col cyber-right">
+      <section class="panel threat-panel">
+        <div class="panel-head">
+          <div class="panel-title">威胁情报<span>THREAT INTEL</span></div>
+          <div class="head-note" id="feedStatus"><i></i>CONNECTING</div>
+        </div>
+        <ul class="threat-list" id="threatList"></ul>
+      </section>
+
+      <section class="panel flows-panel">
+        <div class="panel-head">
+          <div class="panel-title">实时连接<span>LOCAL TCP</span></div>
+          <div class="head-code" id="flowCount">--</div>
+        </div>
+        <div class="flow-table">
+          <div class="flow-head"><span>源</span><span>目标</span><span>协议</span><span>状态</span></div>
+          <div id="flowList"></div>
+        </div>
+        <div class="flow-summary">
+          <span>入站 62%</span>
+          <div><i style="width:62%"></i></div>
+          <span>出站 38%</span>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <!-- ================= 终端模式 ================= -->
+  <main class="terminal-screen" id="terminalScreen" hidden>
+    <div class="term-head">
+      <div class="term-head-left"><span class="term-led"></span>SKYNET // LOCAL TTY<span class="term-muted">REAL PROBES</span></div>
+      <div class="term-tabs"><span class="active">tty1</span><span>sys</span><span>net</span></div>
+      <div class="term-head-right"><span id="termUptime">UPTIME --</span><span id="termClock">--:--:--</span></div>
+    </div>
+
+    <div class="term-grid">
+      <aside class="term-left">
+        <section class="term-card">
+          <div class="term-card-title">SYSTEM <span>/ REALTIME</span></div>
+          <div class="gauge">
+            <div class="gauge-top"><span>CPU</span><b id="termCpu">--%</b></div>
+            <div class="gauge-bar"><i id="termCpuBar" style="width:0%"></i></div>
+          </div>
+          <div class="gauge">
+            <div class="gauge-top"><span>MEMORY</span><b id="termMem">--%</b></div>
+            <div class="gauge-bar"><i id="termMemBar" class="blue" style="width:0%"></i></div>
+          </div>
+          <div class="gauge">
+            <div class="gauge-top"><span>DISK</span><b id="termDisk">--%</b></div>
+            <div class="gauge-bar"><i id="termDiskBar" class="amber" style="width:0%"></i></div>
+          </div>
+          <canvas id="termCpuGraph" width="260" height="72"></canvas>
+          <div class="term-sys-meta">
+            <span>HOST <b id="termHost">--</b></span>
+            <span>KERNEL <b id="termKernel">--</b></span>
+            <span>UPTIME <b id="termUptime2">--</b></span>
+            <span>CORES <b id="termCores">--</b></span>
+          </div>
+        </section>
+
+        <section class="term-card term-proc">
+          <div class="term-card-title">PROCESSES <span>/ TOP</span></div>
+          <div class="proc-head"><span>PID</span><span>NAME</span><span>CPU</span><span>MEM</span></div>
+          <div id="termProcList"></div>
+        </section>
+
+        <section class="term-card term-node">
+          <div class="term-card-title">NODE <span>/ UPLINK</span></div>
+          <div class="node-line"><span>USGS FEED</span><b class="ok" id="termUsgs">ONLINE</b></div>
+          <div class="node-line"><span>NASA EONET</span><b class="ok" id="termEonet">ONLINE</b></div>
+          <div class="node-line"><span>MAP ENGINE</span><b id="termTiles">--</b></div>
+          <div class="node-line"><span>LOCAL PROBE</span><b id="termProbe">OFFLINE</b></div>
+          <div class="node-line"><span>EVENT BUFFER</span><b id="termEventCount">--</b></div>
+        </section>
+      </aside>
+
+      <section class="term-center">
+        <div class="term-window" id="termWindow">
+          <div class="term-bar">
+            <div class="term-bar-dots"><i></i><i></i><i></i></div>
+            <span class="term-bar-title">skynet@core: ~/earth-os</span>
+            <span class="term-bar-state">UTF-8 · 256 COLORS · 120×40</span>
+          </div>
+          <div class="term-output" id="termOutput"></div>
+          <div class="term-inputline">
+            <span class="term-prompt">skynet@core:~$</span>
+            <input id="termInput" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="终端命令">
+            <span class="term-caret"></span>
+          </div>
+        </div>
+
+        <div class="keyboard" id="termKeyboard" aria-hidden="true">
+          <div class="kbd-row">
+            <button class="key spec" data-key="Escape">ESC</button>
+            <button class="key" data-key="1">1</button><button class="key" data-key="2">2</button><button class="key" data-key="3">3</button><button class="key" data-key="4">4</button><button class="key" data-key="5">5</button><button class="key" data-key="6">6</button><button class="key" data-key="7">7</button><button class="key" data-key="8">8</button><button class="key" data-key="9">9</button><button class="key" data-key="0">0</button><button class="key" data-key="-">-</button><button class="key" data-key="=">=</button>
+            <button class="key spec wide" data-key="Backspace">BKSP</button>
+          </div>
+          <div class="kbd-row">
+            <button class="key spec" data-key="Tab">TAB</button>
+            <button class="key" data-key="q">Q</button><button class="key" data-key="w">W</button><button class="key" data-key="e">E</button><button class="key" data-key="r">R</button><button class="key" data-key="t">T</button><button class="key" data-key="y">Y</button><button class="key" data-key="u">U</button><button class="key" data-key="i">I</button><button class="key" data-key="o">O</button><button class="key" data-key="p">P</button><button class="key" data-key="[">[</button><button class="key" data-key="]">]</button><button class="key spec wide" data-key="\">\</button>
+          </div>
+          <div class="kbd-row">
+            <button class="key spec wide" data-key="CapsLock">CAPS</button>
+            <button class="key" data-key="a">A</button><button class="key" data-key="s">S</button><button class="key" data-key="d">D</button><button class="key" data-key="f">F</button><button class="key" data-key="g">G</button><button class="key" data-key="h">H</button><button class="key" data-key="j">J</button><button class="key" data-key="k">K</button><button class="key" data-key="l">L</button><button class="key" data-key=";">;</button><button class="key" data-key="'">'</button><button class="key spec wide" data-key="Enter">ENTER</button>
+          </div>
+          <div class="kbd-row">
+            <button class="key spec wide" data-key="Shift">SHIFT</button>
+            <button class="key" data-key="z">Z</button><button class="key" data-key="x">X</button><button class="key" data-key="c">C</button><button class="key" data-key="v">V</button><button class="key" data-key="b">B</button><button class="key" data-key="n">N</button><button class="key" data-key="m">M</button><button class="key" data-key=",">,</button><button class="key" data-key=".">.</button><button class="key" data-key="/">/</button><button class="key spec wide" data-key="Shift">SHIFT</button>
+          </div>
+          <div class="kbd-row">
+            <button class="key spec" data-key="Control">CTRL</button>
+            <button class="key spec" data-key="Alt">ALT</button>
+            <button class="key spec space" data-key=" ">SPACE</button>
+            <button class="key spec" data-key="Alt">ALT</button>
+            <button class="key spec" data-key="Control">CTRL</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="term-right">
+        <section class="term-card">
+          <div class="term-card-title">NETWORK <span>/ LIVE</span></div>
+          <canvas id="termNetGraph" width="300" height="96"></canvas>
+          <div class="term-net-stats">
+            <div><span>DOWN</span><b id="termDown">--</b></div>
+            <div><span>UP</span><b id="termUp">--</b></div>
+            <div><span>PPS</span><b id="termPps">--</b></div>
+          </div>
+        </section>
+
+        <section class="term-card term-events">
+          <div class="term-card-title">EVENTS <span>/ CLICK</span></div>
+          <div id="termEvents"></div>
+        </section>
+
+        <section class="term-card term-files">
+          <div class="term-card-title">FILES <span>/ WORKSPACE</span></div>
+          <div id="termFiles"></div>
+        </section>
+      </aside>
+    </div>
+
+    <footer class="term-foot">
+      <div class="term-foot-left"><span class="ok">● REAL PROBES</span><span id="termFootHost">HOST --</span><span>MEM --</span><span>NET --</span></div>
+      <div class="term-foot-right"><span>F1 HELP</span><span>CTRL+L CLEAR</span><span>↑↓ HISTORY</span><span>TAB COMPLETE</span></div>
+    </footer>
+  </main>
+
+  <footer class="bottombar">
+    <div class="foot-status">
+      <span class="status-dot"></span>
+      <div><b>天网在线</b><span id="footSub">ALL SYSTEMS NOMINAL</span></div>
+    </div>
+    <div class="ticker">
+      <div class="ticker-track">
+        <span>正在接入实时数据 · USGS + NASA EONET · 3D 地球 / 地图 / 网络空间 · 数据源持续刷新 · 守护我们唯一的家园 · FOR OUR ONLY HOME ·</span>
+        <span aria-hidden="true">正在接入实时数据 · USGS + NASA EONET · 3D 地球 / 地图 / 网络空间 · 数据源持续刷新 · 守护我们唯一的家园 · FOR OUR ONLY HOME ·</span>
+      </div>
+    </div>
+    <div class="foot-right">
+      <span>数据完整性</span>
+      <b>99.99%</b>
+      <i class="foot-bars"><em></em><em></em><em></em><em></em><em></em></i>
+    </div>
+  </footer>
+
+</div>
+
+<script src="vendor/textures.js"></script>
+<script src="vendor/three.min.js"></script>
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
