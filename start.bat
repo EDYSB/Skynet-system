@@ -12,8 +12,31 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+
+netstat -ano | findstr /C:":8792 " | findstr /C:"LISTENING" >nul 2>nul
+if not errorlevel 1 (
+  echo   Port 8792 is already in use: an instance is already running.
+  echo   Reusing it - no second copy was started.
+  echo   To restart, close the existing service window first, then run this file again.
+  echo.
+  start "" http://127.0.0.1:8792
+  pause
+  exit /b 0
+)
+
+echo   Starting service ...
 start "SKYNET-SERVER" /b node server.js
-timeout /t 1 /nobreak >nul
+timeout /t 2 /nobreak >nul
+netstat -ano | findstr /C:":8792 " | findstr /C:"LISTENING" >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo   Startup failed: port 8792 is not listening.
+  echo   Read the error printed above, fix it, then run this file again.
+  echo.
+  pause
+  exit /b 1
+)
+
 start "" http://127.0.0.1:8792
 echo.
 echo   Local: http://127.0.0.1:8792

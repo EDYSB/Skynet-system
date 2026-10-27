@@ -1250,6 +1250,24 @@ labTarget.start().then(result => {
   }
 });
 
+server.on('error', err => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error('');
+    console.error(`  [!] 端口 ${PORT} 已被占用：本机已经有一个天网实例在运行。`);
+    console.error(`      直接打开 http://127.0.0.1:${PORT}/ 即可使用。`);
+    console.error('      如需重启：先关闭旧的服务窗口（或结束 node.exe），再运行 start.bat。');
+    console.error('');
+    process.exit(1);
+  }
+  if (err && err.code === 'EACCES') {
+    console.error('');
+    console.error(`  [!] 没有权限监听 ${HOST}:${PORT}，请换一个端口：set PORT=8794 && node server.js`);
+    console.error('');
+    process.exit(1);
+  }
+  throw err;
+});
+
 server.listen(PORT, HOST, () => {
   console.log('');
   console.log('  天网 SKYNET · 安全网关已启动');
