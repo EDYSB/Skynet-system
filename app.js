@@ -3206,8 +3206,14 @@
   function termRenderPython(d) {
     const out = String(d.stdout || '').replace(/\s+$/, '');
     const errText = String(d.stderr || '').replace(/\s+$/, '');
-    if (out) out.split(/\r?\n/).slice(0, 60).forEach(line => termLine(escapeHtml(line)));
-    if (errText) errText.split(/\r?\n/).slice(0, 40).forEach(line => termLine(`<span class="err">${escapeHtml(line)}</span>`));
+    const MAX_OUT = 260;
+    const MAX_ERR = 60;
+    if (out) {
+      const lines = out.split(/\r?\n/);
+      lines.slice(0, MAX_OUT).forEach(line => termLine(escapeHtml(line)));
+      if (lines.length > MAX_OUT) termLine(`<span class="dim">… 输出共 ${lines.length} 行，仅显示前 ${MAX_OUT} 行</span>`);
+    }
+    if (errText) errText.split(/\r?\n/).slice(0, MAX_ERR).forEach(line => termLine(`<span class="err">${escapeHtml(line)}</span>`));
     if (!out && !errText && d.ok) termLine('<span class="dim">(no output)</span>');
     if (!d.ok) termLine(`<span class="dim">exit ${d.exitCode}${d.timedOut ? ' · timeout' : ''}</span>`);
   }
