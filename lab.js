@@ -18,7 +18,7 @@ const dns = require('dns');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 let labTarget = null;
 try {
   labTarget = require('./靶机限制/lab-target');
@@ -52,6 +52,7 @@ const MAX_SCAN_PORTS = 300;
 ------------------------------------------------------------ */
 
 function run(file, args, options = {}) {
+  if (options.stdin === 'ignore') return runWithClosedStdin(file, args, options);
   return new Promise(resolve => {
     const settle = err => {
       resolve({
@@ -82,6 +83,55 @@ function run(file, args, options = {}) {
     } catch (err) {
       settle(err);
     }
+  });
+}
+
+/* 关闭 stdin 的版本：sqlmap 的 --version / --help 在管道输入下会等 Enter，
+   msfconsole 也可能停在交互提示。stdio 用 ignore 让 read() 立刻拿到 EOF。 */
+function runWithClosedStdin(file, args, options = {}) {
+  return new Promise(resolve => {
+    const timeout = options.timeout || 15000;
+    const max = options.maxBuffer || 4 * 1024 * 1024;
+    let stdout = '';
+    let stderr = '';
+    let done = false;
+    const settle = payload => {
+      if (done) return;
+      done = true;
+      resolve(payload);
+    };
+    let child;
+    try {
+      child = spawn(file, args, {
+        cwd: options.cwd || undefined,
+        env: options.env || undefined,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+    } catch (err) {
+      settle({ ok: false, code: -1, stdout: '', stderr: '', error: String(err && err.message || err) });
+      return;
+    }
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch (err) { /* ignore */ }
+      settle({ ok: false, code: -1, stdout, stderr, error: `timeout after ${timeout} ms` });
+    }, timeout);
+    child.stdout.on('data', chunk => { if (stdout.length < max) stdout += chunk.toString(); });
+    child.stderr.on('data', chunk => { if (stderr.length < max) stderr += chunk.toString(); });
+    child.on('error', err => {
+      clearTimeout(timer);
+      settle({ ok: false, code: -1, stdout, stderr, error: String(err && err.message || err) });
+    });
+    child.on('close', code => {
+      clearTimeout(timer);
+      settle({
+        ok: code === 0,
+        code: typeof code === 'number' ? code : -1,
+        stdout,
+        stderr,
+        error: code === 0 ? '' : `Command failed: ${file} ${args.join(' ')}`
+      });
+    });
   });
 }
 
@@ -1568,6 +1618,17 @@ const PY_RUN_WRAP = [
   'runpy.run_path(target, run_name="__main__")'
 ].join('; ');
 
+/* 便携版 Python 的 _pth 不会把脚本目录放进 sys.path，sqlmap.py 直接跑会报
+   “wrong installation detected (missing modules)”，所以统一用 PY_RUN_WRAP 包一层。
+   这里只负责把 -c 包装从展示用的命令行里隐藏掉。 */
+function displayCommand(file, args) {
+  const list = [file, ...args];
+  const shown = args[0] === '-c' && args[1] === PY_RUN_WRAP
+    ? [file, args[2], ...args.slice(3)]
+    : list;
+  return shown.map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' ');
+}
+
 async function runPythonFile(relPath, args = [], timeoutMs = 30000) {
   const raw = String(relPath == null ? '' : relPath).trim();
   if (!raw) return { ok: false, real: true, error: 'missing file' };
@@ -1836,13 +1897,13 @@ async function toolRun(name, rawCommand) {
   }
   const args = [...(resolved.prefix || []), ...tokens];
   const started = Date.now();
-  const result = await run(resolved.file, args, { timeout: TOOL_NATIVE_TIMEOUT, maxBuffer: 16 * 1024 * 1024 });
+  const result = await run(resolved.file, args, { timeout: TOOL_NATIVE_TIMEOUT, maxBuffer: 16 * 1024 * 1024, stdin: 'ignore' });
   return {
     ok: result.ok,
     real: true,
     tool: resolved.entry.id,
     via: resolved.via,
-    command: [resolved.file, ...args].map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' '),
+    command: displayCommand(resolved.file, args),
     args,
     exitCode: result.code,
     durationMs: Date.now() - started,
@@ -1856,7 +1917,7 @@ async function resolveSqlmap(python) {
   const local = findSqlmapEntry();
   const via = local && local.includes(`${path.sep}tools${path.sep}`) ? 'tools/sqlmap' : 'vendor/sqlmap';
   if (local && python) {
-    return { available: true, via, file: python.file, prefix: [local] };
+    return { available: true, via, file: python.file, prefix: ['-c', PY_RUN_WRAP, local] };
   }
   const native = await commandExists('sqlmap');
   if (native) return { available: true, via: 'PATH', file: native, prefix: [] };
@@ -2114,13 +2175,13 @@ async function sqlmapAttack(targetId, adhocUrl, rawCommand) {
   const common = passthrough.length ? [...fixed, ...passthrough] : [...fixed, ...defaults];
   if (vendored && python) {
     file = python.file;
-    args = [vendored, ...common];
+    args = ['-c', PY_RUN_WRAP, vendored, ...common];
   } else {
     file = 'sqlmap';
     args = common;
   }
   const started = Date.now();
-  const result = await run(file, args, { timeout: SQLMAP_TIMEOUT, maxBuffer: 16 * 1024 * 1024 });
+  const result = await run(file, args, { timeout: SQLMAP_TIMEOUT, maxBuffer: 16 * 1024 * 1024, stdin: 'ignore' });
   const stdout = limitText(`${result.stdout || ''}`);
   const stderr = limitText(`${result.stderr || ''}`);
   const combined = `${result.stdout || ''}\n${result.stderr || ''}`;
@@ -2131,7 +2192,7 @@ async function sqlmapAttack(targetId, adhocUrl, rawCommand) {
     real: true,
     tool: 'sqlmap',
     via: entry.via,
-    command: [file, ...args].map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' '),
+    command: displayCommand(file, args),
     target: targetUrl,
     targetId: target.id,
     adhoc: !!target.adhoc,
@@ -2259,7 +2320,7 @@ async function msfAttack(targetId, adhocUrl) {
   ].join('; ');
   const args = ['-q', '-n', '-x', script];
   const started = Date.now();
-  const result = await run(file, args, { timeout: MSF_TIMEOUT, maxBuffer: 8 * 1024 * 1024 });
+  const result = await run(file, args, { timeout: MSF_TIMEOUT, maxBuffer: 8 * 1024 * 1024, stdin: 'ignore' });
   return {
     ok: result.ok,
     real: true,
