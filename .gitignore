@@ -11,3 +11,11 @@ node_modules/
 # 编辑器
 .vscode/
 .idea/
+
+# 工具二进制：不入库，用 tools/install-tools.ps1 现场拉取
+tools/nmap/
+tools/python/
+tools/py/
+tools/sqlmap/
+tools/_dl/
+tools/sqlmap-output/tools/install-log.txt

@@ -1308,13 +1308,13 @@ function buildFindings(data) {
 
 const TARGETS_FILE = path.join(__dirname, '靶机限制', 'lab-targets.json');
 const LAB_WORDLIST = path.join(__dirname, '靶机限制', 'lab-wordlist.txt');
-const SQLMAP_OUTPUT = path.join(__dirname, 'vendor', 'sqlmap-output');
+const SQLMAP_OUTPUT = path.join(__dirname, 'tools', 'sqlmap-output');
 const SQLMAP_TIMEOUT = 240000;
 const HYDRA_TIMEOUT = 180000;
 const MSF_TIMEOUT = 180000;
 
 const DEFAULT_HYDRA_FORM = '/login:user=^USER^&pass=^PASS^:F=invalid';
-const LAB_REMOVED = '靶机限制/ 已移除 · 用 sqlmap <完整URL> 直接指定目标';
+const LAB_REMOVED = 'lab target removed · pass a full URL';
 
 /* 白名单靶机已被删除；这里保留兜底结构，供配置恢复后使用 */
 const BUILTIN_TARGET = labTarget
@@ -1431,15 +1431,15 @@ function targetSummary(target) {
 function parseAdhocTarget(rawUrl) {
   const text = String(rawUrl || '').trim();
   if (!text) return { target: null, error: null };
-  if (text.length > 2048) return { target: null, error: 'URL 过长（上限 2048）' };
+  if (text.length > 2048) return { target: null, error: 'URL too long (max 2048)' };
   let url;
   try {
     url = new URL(text);
   } catch (err) {
-    return { target: null, error: `不是合法 URL：${text}` };
+    return { target: null, error: `not a valid URL: ${text}` };
   }
-  if (!/^https?:$/.test(url.protocol)) return { target: null, error: '只支持 http / https' };
-  if (url.username || url.password) return { target: null, error: 'URL 里不要带账号密码' };
+  if (!/^https?:$/.test(url.protocol)) return { target: null, error: 'only http / https is supported' };
+  if (url.username || url.password) return { target: null, error: 'credentials in the URL are not allowed' };
   const pathAndQuery = `${url.pathname || '/'}${url.search || ''}`;
   const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
   return {
@@ -1462,7 +1462,23 @@ function parseAdhocTarget(rawUrl) {
 
 let toolCache = { at: 0, tools: null, wordlist: null };
 
+const TOOLS_DIR = path.join(__dirname, 'tools');
+
+/* tools/ 里直接放二进制就能被识别，优先于 PATH */
+function findLocalBinary(name) {
+  const exts = IS_WIN ? ['.exe', '.cmd', '.bat', ''] : [''];
+  for (const ext of exts) {
+    const candidate = path.join(TOOLS_DIR, `${name}${ext}`);
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    } catch (err) { /* ignore */ }
+  }
+  return null;
+}
+
 async function commandExists(name) {
+  const local = findLocalBinary(name);
+  if (local) return local;
   /* Windows 下 execFile 不走 PATHEXT，必须显式调用 where.exe */
   const finder = IS_WIN ? 'where.exe' : 'which';
   const result = await run(finder, [name], { timeout: 5000 });
@@ -1472,16 +1488,45 @@ async function commandExists(name) {
 }
 
 async function resolvePython() {
-  const candidates = IS_WIN ? ['python', 'python3', 'py'] : ['python3', 'python'];
+  /* 优先用 tools/python 里的便携版，其次系统 Python */
+  const localPy = path.join(TOOLS_DIR, 'python', IS_WIN ? 'python.exe' : 'bin/python3');
+  const candidates = [localPy].concat(IS_WIN ? ['python', 'python3', 'py'] : ['python3', 'python']);
   for (const candidate of candidates) {
-    const found = await commandExists(candidate);
+    const found = candidate === localPy
+      ? (fs.existsSync(candidate) ? candidate : null)
+      : await commandExists(candidate);
     if (!found) continue;
     const probe = await run(found, ['--version'], { timeout: 8000 });
     if (probe.ok && /python\s*3/i.test(`${probe.stdout}${probe.stderr}`)) {
-      return { name: candidate, file: found, version: `${probe.stdout}${probe.stderr}`.trim() };
+      return { name: candidate === localPy ? 'tools/python' : candidate, file: found, version: `${probe.stdout}${probe.stderr}`.trim() };
     }
   }
   return null;
+}
+
+/* 在终端里跑一段 Python：一次性执行，带超时与输出上限 */
+async function runPython(code, timeoutMs = 15000) {
+  const src = String(code == null ? '' : code);
+  if (!src.trim()) return { ok: false, real: true, error: 'empty code' };
+  if (src.length > 20000) return { ok: false, real: true, error: 'code too long (max 20000 chars)' };
+  const py = await resolvePython();
+  if (!py) return { ok: false, real: true, error: 'python 3 not found', hint: 'put the embeddable build under tools/python/' };
+  const started = Date.now();
+  const result = await run(py.file, ['-c', src], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 });
+  const timedOut = /timed? ?out|ETIMEDOUT|killed/i.test(result.error || '');
+  return {
+    ok: result.ok,
+    real: true,
+    python: py.version,
+    via: py.name,
+    code: src.length > 200 ? `${src.slice(0, 200)}…` : src,
+    durationMs: Date.now() - started,
+    exitCode: result.code,
+    timedOut,
+    stdout: limitText(result.stdout, 20000),
+    stderr: limitText(result.stderr, 20000),
+    error: result.ok ? null : (timedOut ? `timeout after ${timeoutMs} ms` : (result.error || 'python failed'))
+  };
 }
 
 function findFileUnder(root, fileName, maxDepth = 3) {
@@ -1504,17 +1549,137 @@ function findFileUnder(root, fileName, maxDepth = 3) {
   return null;
 }
 
+function findSqlmapEntry() {
+  return findFileUnder(path.join(TOOLS_DIR, 'sqlmap'), 'sqlmap.py', 3)
+    || findFileUnder(path.join(__dirname, 'vendor', 'sqlmap'), 'sqlmap.py', 3);
+}
+
+/* ------------------------------------------------------------
+   TOOLKIT · 工具清单（只做识别与状态，不做任意命令执行）
+   ------------------------------------------------------------ */
+const TOOLKIT = [
+  { id: 'sqlmap', name: 'sqlmap', bin: 'sqlmap', hint: 'tools/sqlmap（已内置）' },
+  { id: 'volatility', name: 'Volatility 3', bin: 'vol', hint: 'tools/py + tools/run-vol.cmd（已内置）' },
+  { id: 'nmap', name: 'Nmap', bin: 'nmap', hint: '解压到 tools/nmap/ 或放进 PATH' },
+  { id: 'ffuf', name: 'ffuf', bin: 'ffuf', hint: 'winget install ffuf.ffuf，或放进 tools/' },
+  { id: 'nikto', name: 'Nikto', bin: 'nikto', hint: '需 Strawberry Perl + nikto.pl' },
+  { id: 'gobuster', name: 'Gobuster', bin: 'gobuster', hint: 'GitHub release 解压到 tools/' },
+  { id: 'dirb', name: 'Dirb', bin: 'dirb', hint: '需 Perl' },
+  { id: 'hydra', name: 'Hydra', bin: 'hydra', hint: '无官方 Windows 构建，需 WSL' },
+  { id: 'hashcat', name: 'Hashcat', bin: 'hashcat', hint: 'hashcat.net 下载后放进 tools/' },
+  { id: 'john', name: 'John the Ripper', bin: 'john', hint: 'openwall.com/john 下载后放进 tools/' },
+  { id: 'exiftool', name: 'ExifTool', bin: 'exiftool', hint: '解压到 tools/exiftool/' },
+  { id: 'testdisk', name: 'TestDisk', bin: 'testdisk_win', hint: '解压到 tools/testdisk/' },
+  { id: 'tshark', name: 'Wireshark / tshark', bin: 'tshark', hint: 'winget install WiresharkFoundation.Wireshark' },
+  { id: 'msfconsole', name: 'Metasploit', bin: 'msfconsole', hint: '官方 MSI，需管理员' },
+  { id: 'bettercap', name: 'Bettercap', bin: 'bettercap', hint: 'bettercap.org 下载 Windows 构建' },
+  { id: 'cherrytree', name: 'CherryTree', bin: 'cherrytree', hint: 'winget install Giuspen.Cherrytree' }
+];
+
+function findToolBinary(entry) {
+  const exts = IS_WIN ? ['.exe', '.cmd', '.bat', ''] : [''];
+  const dirs = [path.join(TOOLS_DIR, entry.id), TOOLS_DIR];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = path.join(dir, `${entry.bin}${ext}`);
+      try {
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+      } catch (err) { /* ignore */ }
+    }
+  }
+  return null;
+}
+
+let toolkitCache = { at: 0, data: null };
+
+async function toolkitStatus(force = false) {
+  if (!force && toolkitCache.data && Date.now() - toolkitCache.at < 15000) return toolkitCache.data;
+  const rows = [];
+  for (const entry of TOOLKIT) {
+    let file = null;
+    let via = null;
+    if (entry.id === 'sqlmap') {
+      file = findSqlmapEntry();
+      via = file ? 'tools/sqlmap' : null;
+    } else if (entry.id === 'volatility') {
+      const volPath = path.join(TOOLS_DIR, 'py', 'bin', IS_WIN ? 'vol.exe' : 'vol');
+      if (fs.existsSync(volPath)) { file = volPath; via = 'tools/py'; }
+    } else {
+      file = findToolBinary(entry);
+      if (file) via = 'tools/';
+      else { file = await commandExists(entry.bin); via = file ? 'PATH' : null; }
+    }
+    rows.push({
+      id: entry.id,
+      name: entry.name,
+      available: !!file,
+      path: file || null,
+      via,
+      hint: entry.hint
+    });
+  }
+  const data = {
+    ok: true,
+    real: true,
+    installed: rows.filter(r => r.available).length,
+    total: rows.length,
+    tools: rows
+  };
+  toolkitCache = { at: Date.now(), data };
+  return data;
+}
+
+/* 真实 Nmap 调用：只接受合法的 host / ports，不做任意参数透传 */async function nmapRun(host, ports) {
+  const target = String(host || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/.test(target)) {
+    return { ok: false, real: true, tool: 'nmap', error: 'invalid host' };
+  }
+  const portSpec = String(ports || '').trim();
+  if (portSpec && !/^[0-9,\-]{1,120}$/.test(portSpec)) {
+    return { ok: false, real: true, tool: 'nmap', error: 'invalid port list' };
+  }
+  const entry = TOOLKIT.find(t => t.id === 'nmap');
+  const file = findToolBinary(entry) || await commandExists('nmap');
+  if (!file) {
+    return {
+      ok: false,
+      real: true,
+      tool: 'nmap',
+      error: 'nmap binary not found',
+      hint: 'unzip nmap-*-win32.zip into tools/nmap/'
+    };
+  }
+  const args = ['-Pn', '-sT', '--host-timeout', '60s'];
+  if (portSpec) args.push('-p', portSpec);
+  args.push(target);
+  const started = Date.now();
+  const result = await run(file, args, { timeout: 150000, maxBuffer: 8 * 1024 * 1024 });
+  return {
+    ok: result.ok,
+    real: true,
+    tool: 'nmap',
+    command: [file, ...args].map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' '),
+    target,
+    exitCode: result.code,
+    durationMs: Date.now() - started,
+    stdout: limitText(result.stdout),
+    stderr: limitText(result.stderr),
+    error: result.ok ? null : (result.error || 'nmap failed')
+  };
+}
+
 async function resolveSqlmap(python) {
-  const vendored = findFileUnder(path.join(__dirname, 'vendor', 'sqlmap'), 'sqlmap.py', 3);
-  if (vendored && python) {
-    return { available: true, via: 'vendor/sqlmap', file: python.file, prefix: [vendored] };
+  const local = findSqlmapEntry();
+  const via = local && local.includes(`${path.sep}tools${path.sep}`) ? 'tools/sqlmap' : 'vendor/sqlmap';
+  if (local && python) {
+    return { available: true, via, file: python.file, prefix: [local] };
   }
   const native = await commandExists('sqlmap');
   if (native) return { available: true, via: 'PATH', file: native, prefix: [] };
-  if (vendored && !python) {
-    return { available: false, via: 'vendor/sqlmap', error: 'vendor 里有 sqlmap，但没有可用的 python 3 解释器' };
+  if (local && !python) {
+    return { available: false, via, error: 'sqlmap source found in tools/ but no python 3 interpreter' };
   }
-  return { available: false, via: null, error: 'sqlmap 未安装' };
+  return { available: false, via: null, error: 'sqlmap not installed' };
 }
 
 async function detectTools() {
@@ -1533,19 +1698,19 @@ async function detectTools() {
         via: sqlmap.via || null,
         version: null,
         error: sqlmap.error || null,
-        hint: sqlmap.available ? null : 'pip install sqlmap --target vendor/sqlmap'
+        hint: sqlmap.available ? null : 'pip install sqlmap --target tools/sqlmap'
       },
       hydra: {
         available: !!hydraBin,
         via: hydraBin ? 'PATH' : null,
-        error: hydraBin ? null : 'hydra 没有任何官方 Windows 构建',
-        hint: hydraBin ? null : 'WSL Ubuntu 里 apt install hydra，或使用 Linux 主机'
+        error: hydraBin ? null : 'hydra has no official Windows build',
+        hint: hydraBin ? null : 'drop hydra.exe into tools/ , or install it on WSL / Linux'
       },
       msfconsole: {
         available: !!msfBin,
         via: msfBin ? 'PATH' : null,
-        error: msfBin ? null : 'Metasploit Framework 不支持原生 Windows 运行',
-        hint: msfBin ? null : 'WSL Ubuntu 里安装 metasploit-framework，或使用 Kali'
+        error: msfBin ? null : 'Metasploit does not run natively on Windows',
+        hint: msfBin ? null : 'drop msfconsole into tools/ , or use WSL / Kali'
       },
       python: python ? { available: true, name: python.name, version: python.version } : { available: false }
     },
@@ -1639,7 +1804,7 @@ async function sqlmapAttack(targetId, adhocUrl) {
     };
   }
   const python = await resolvePython();
-  const vendored = findFileUnder(path.join(__dirname, 'vendor', 'sqlmap'), 'sqlmap.py', 3);
+  const vendored = findSqlmapEntry();
   const targetUrl = `${target.base}${target.sqlmapPath}`;
   let file;
   let args;
@@ -1718,16 +1883,16 @@ async function hydraAttack(opts = {}) {
       ok: false,
       real: true,
       tool: 'hydra',
-      error: 'hydra 需要字典文件 · 用法 hydra <URL> [用户] [字典路径]',
-      hint: '字典一行一个口令；没有字典就没法爆破'
+      error: 'hydra needs a wordlist · usage: hydra <url> [user] [wordlist]',
+      hint: 'one password per line'
     };
   }
   if (!fs.existsSync(wordlist)) {
-    return { ok: false, real: true, tool: 'hydra', error: `字典不存在：${wordlist}` };
+    return { ok: false, real: true, tool: 'hydra', error: `wordlist not found: ${wordlist}` };
   }
   const form = String(opts.form || '').trim() || DEFAULT_HYDRA_FORM;
   if (!form.startsWith('/') || !form.includes('^USER^') || !form.includes('^PASS^')) {
-    return { ok: false, real: true, tool: 'hydra', error: '表单模板格式不对，应形如 /login:user=^USER^&pass=^PASS^:F=invalid' };
+    return { ok: false, real: true, tool: 'hydra', error: 'bad form template · expected /login:user=^USER^&pass=^PASS^:F=invalid' };
   }
 
   const tools = await attackTools();
@@ -1842,5 +2007,8 @@ module.exports = {
   attackTools,
   sqlmapAttack,
   hydraAttack,
-  msfAttack
+  msfAttack,
+  toolkitStatus,
+  nmapRun,
+  runPython
 };

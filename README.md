@@ -47,7 +47,7 @@ node server.js
 服务监听 `0.0.0.0:8792`，启动时控制台会打印所有局域网地址，例如：
 
 ```
-http://172.19.12.65:8792/
+http://127.0.0.1:8792/
 ```
 
 同一局域网内的设备打开该地址即可进入核验页。首次运行时 Windows 防火墙可能询问是否允许 Node.js 访问专用网络，请选择允许。
@@ -164,8 +164,18 @@ http://172.19.12.65:8792/
 | `focus <n>` | 打开地图并飞到事件 |
 | `earth` / `map` / `net` | 切换模式 |
 | `refresh` | 刷新实时数据 |
-| `sys` / `neofetch` | 系统遥测 |
+| `sys` / `systeminfo` | 系统遥测 |
+| `ipconfig` | 真实网卡地址 + 链路速率 |
+| `ver` | 真实 Windows 版本 / 构建号 |
+| `tasklist` | 真实进程列表 |
+| `netstat` | 真实监听端口 |
 | `ls` / `cat README.md` | 浏览项目文件 |
+| `cd <dir>` / `dir [path]` | cmd 风格切换目录、列目录（受限于项目目录） |
+| `type <file>` | cmd 风格读取文件 |
+| `cls` / `echo` / `pwd` | 清屏 / 回显 / 当前路径 |
+| `tree [path] [depth]` | 动画目录树（扫描进度条 + 生长效果），`--fast` 跳过动画 |
+| `cartoon` | 60 秒二进制雨：0/1 满屏滚动，20fps，任意键中止 |
+| `python [code]` | 跑 Python 3（优先 `tools/python`）；不带参数进入 REPL，`exit()` 退出 |
 | `ping <host>` | 真实 ICMP 延迟；ICMP 被过滤时退回真实 TCP 握手延迟 |
 | `probe` | 本机探针状态 |
 | `clear` / `banner` / `reboot` | 终端控制 |
@@ -183,10 +193,10 @@ http://172.19.12.65:8792/
 | `vuln` | 由真实读数推导结论，附 CVE / CISA KEV 参考 |
 | `searchsploit <q>` | NVD CVE 2.0 实时检索 + CISA KEV 交叉标注 |
 | `msf` | 原生扫描控制台（端口 / HTTP 头 / OPTIONS / banner / TLS / DNS / RDAP / robots.txt） |
-| `msfconsole` | 真实 `msfconsole` 调用，`auxiliary/scanner/http/http_version` 打靶机（需本机已装 MSF） |
-| `lab` | 靶机状态 + `sqlmap` / `hydra` / `msfconsole` 就绪情况 |
-| `hydra` | 真实字典爆破：`http-post-form` → `127.0.0.1:8793/login`（需已装 hydra） |
-| `sqlmap` / `sqli` | 真实注入检测 + 库 / 表枚举 → `127.0.0.1:8793/item?id=1` |
+| `lab` | 真实工具就绪情况（sqlmap 等） |
+| `toolkit` | 16 个工具的安装状态：`tools/` 优先，其次 `PATH`，缺的给出装法 |
+| `nmap <host> [ports]` | 装了真 nmap 就走真 nmap；只给端口时退回本机 connect 扫描 |
+| `sqlmap` / `sqli` | 真实注入检测 + 库 / 表枚举，目标由 URL 指定 |
 | `payload <text>` | 真实编码（base64 / hex / URL）+ SHA-256 + 信息熵（不生成 shellcode） |
 | `scope` / `target` | 回环作用域 |
 | `report` | 下载真实 Markdown 报告 |
@@ -220,33 +230,25 @@ http://172.19.12.65:8792/
 
 | 模块 | 现状 |
 | --- | --- |
-| `sqlmap` | 已内置 `vendor/sqlmap/`（gitee 镜像克隆），终端里 `sqlmap <URL>` 直接跑真实注入检测 |
-| `hydra` | 无官方 Windows 构建，`hydra` 命令会如实报错；装了 hydra 的机器上自动可用 |
-| `msfconsole` | MSF 不支持原生 Windows；装在 WSL / Linux 上后 `msfconsole` 命令自动可用 |
+| `sqlmap` | 已内置 `tools/sqlmap/`（gitee 镜像克隆），终端里 `sqlmap <URL>` 直接跑真实注入检测 |
 | `payload` | 只做编码与摘要，不生成 shellcode / 反弹 shell |
 
-`lab` 命令随时查看三个工具的真实就绪状态。工具缺失时不会返回假结果。
+`lab` 命令查看真实工具就绪状态。
 
-> 杀毒软件通常会把 sqlmap / metasploit 报为 hacktool。**不要把整机防护关掉**，给 `vendor\sqlmap` 加个排除项即可；演示结束记得删掉排除项。
+> 杀毒软件通常会把 sqlmap 报为 hacktool。**不要把整机防护关掉**，给 `tools\sqlmap` 加个排除项即可；演示结束记得删掉排除项。
 
 ### 指定目标
 
-三个工具都接受终端里直接给的 URL：
+终端里直接给完整 URL：
 
 ```
-sqlmap http://172.19.12.65:8000/product?id=1
-msfconsole http://172.19.12.65:8000/
-hydra http://172.19.12.65:8000/login admin words.txt
+sqlmap http://127.0.0.1:8000/product?id=1
 ```
 
 规矩：
 
 1. **sqlmap 必须带查询参数**（`?id=1` 这种），否则没有注入点可测；只给路径会提示“没有查询参数”，不会瞎跑。
-2. **hydra 必须带字典文件**：`hydra <URL> [用户] [字典路径] [表单模板]`，字典一行一个口令。表单模板省略时用 `/login:user=^USER^&pass=^PASS^:F=invalid`；登录失败页特征不同的要自己写，例如 `/admin/login:username=^USER^&password=^PASS^:F=用户名或密码错误`。
-3. **msfconsole 只需要主机和端口**：`msfconsole <URL>` 从 URL 里取 RHOSTS / RPORT，跑 `auxiliary/scanner/http/http_version`。
-4. **只接受本机发起的请求**。面板监听 `0.0.0.0`，如果谁都能远程填目标，它就成局域网共享扫描器了。所以 `url=` 参数只放行来源地址是回环或本机网卡的请求，别的机器发来一律 `403`。
-
-> 注意：URL 支持只是接口层面。这台 Windows 上 hydra 和 msfconsole 仍然跑不起来（没有官方 Windows 构建），要真跑得用 WSL 或 Kali 虚拟机；届时面板里这些命令会自动变成真实执行。
+2. **来源策略可切换**。默认允许局域网任何已登录用户填目标（方便远程演示），每次远程调用会在服务端窗口打一行审计日志；设 `SKYNET_REMOTE_TARGETS=local` 就退回“只允许本机发起”，其余来源一律 `403`。
 
 ### 靶机限制（已删除）
 
@@ -254,7 +256,7 @@ hydra http://172.19.12.65:8000/login admin words.txt
 
 - 面板照常启动，`lab` 里显示「内置靶机 已移除」
 - `sqlmap` 没有默认目标，必须显式给 URL，否则提示用法
-- `hydra` / `msfconsole` 改为接受 URL；没有 URL 时给用法提示，不再依赖白名单
+- `hydra` / `msfconsole` 相关命令已从终端移除（Windows 上跑不起来）
 
 想恢复其中两个文件（版本库里有）：
 
@@ -290,17 +292,12 @@ move lab-wordlist.txt 靶机限制\
 | `app.js` | 3D 地球、实时数据、地图、网络、终端、真实安全指令 |
 | `server.js` | 静态服务 + 身份会话 + 真实数据聚合 + 探针 API 路由 + 凭据审计 |
 | `lab.js` | 真实探针库：TCP / banner / TLS / HTTP / DNS / RDAP / ICMP / 进程 / 主机姿态 / 注入审计 / 真实工具执行 |
-| `vendor/sqlmap/` | 真实 sqlmap（上游源码克隆） |
+| `tools/` | 真实工具目录：`sqlmap/`、Volatility 3（`py/` + `run-vol.cmd`）、`install-tools.ps1` 一键装其余工具，详见 `tools/README.md` |
 | `intel.js` | 真实漏洞情报：NVD CVE API 2.0 + CISA KEV |
 | `start.bat` | 一键启动 |
 | `vendor/three.min.js` | Three.js r160 |
 | `vendor/leaflet/` | Leaflet 1.9.4 |
 | `vendor/textures.js` | 内嵌 NASA 地球纹理 |
-| `preview-login.png` | 核验界面 |
-| `preview-terminal.png` | 终端模式 |
-| `preview-earth.png` | 行星观测 · NO SIGNAL 观测画面 |
-| `preview-map.png` | 地图深度缩放 |
-| `preview-network.png` | 网络空间 · 真实 BGP / 本机 TCP |
 
 ---
 
@@ -314,7 +311,7 @@ move lab-wordlist.txt 靶机限制\
 - 地球纹理：NASA Blue Marble / Black Marble，经 three-globe 示例资源转存
 - 行星体征为公开资料基线，不是实时观测
 - 观测画面无真实下行源时显示 `NO SIGNAL / 无信号`，两路分别使用失锁纹样与待机测试卡
-- 网络空间：RIS BGP、CISA KEV、Cloudflare/GitHub Status、本机 TCP 为真实；全球拓扑弧线为示意
+- 网络空间：吞吐 / 连接数 / 对端主机 / 协议占比 / 威胁条目全部来自本机探针与真实订阅源；探针未连接时显示 `--`，不生成替代数字；全球拓扑弧线为示意
 - 终端漏洞情报：NVD CVE API 2.0（NIST，公共领域）、CISA KEV（公共领域）
 - 终端探测：全部为本机真实读数与真实网络请求，无模拟数据
 
@@ -326,7 +323,7 @@ move lab-wordlist.txt 靶机限制\
 
 - 1920×1080 / 1440×900 / 1366×768 三种尺寸无横向溢出
 - 身份核验：错误口令拒绝、正确口令通过、会话 Cookie、注销、API 保护
-- 局域网地址 `http://172.19.12.65:8792/` 登录与进入主界面通过
+- 局域网地址 `http://127.0.0.1:8792/` 登录与进入主界面通过
 - 实时事件加载、事件点击、追踪、定位通过
 - 地图 Z8、雷达层、NASA GIBS、高德瓦片加载通过
 - 本机探针读到真实 WLAN 吞吐
@@ -334,12 +331,14 @@ move lab-wordlist.txt 靶机限制\
 - 网络地图滚轮缩放、拖动、节点追踪、TRACK 持续追踪最新 BGP 通过
 - 观测画面无信号状态与两路不同纹样通过
 - 终端命令、文件读取、系统遥测、真实进程列表、键盘输入通过
-- 终端内 `ops` / `recon` / `nmap` / `web` / `audit` / `vuln` / `searchsploit` / `msf` / `msfconsole` / `lab` / `hydra` / `sqlmap` / `payload` / `report` 指令通过
+- 终端内 `ops` / `recon` / `nmap` / `web` / `audit` / `vuln` / `searchsploit` / `msf` / `lab` / `sqlmap` / `payload` / `report` / `ipconfig` / `ver` / `tasklist` / `netstat` 指令通过
 - `靶机限制/` 删除后面板仍能启动；`lab` 显示“内置靶机 已移除”，`sqlmap` 无参数时提示用法
-- `sqlmap <url>` 直接打临时目标通过；无查询串时只提示不误跑；非本机来源的 `url=` 请求返回 403
+- `sqlmap <url>` 直接打临时目标通过；无查询串时只提示不误跑；`SKYNET_REMOTE_TARGETS=local` 时非本机来源返回 403
+- 终端 `cd` / `dir` / `type` / `cls` / `echo` / `pwd` 可用，提示符跟随当前目录
+- `tools/sqlmap` 被识别为 sqlmap 来源，`lab` 显示 `via: tools/sqlmap`
 - 配置写坏时回退内置靶机并在 `lab` 里显示具体错误行
 - `sqlmap` 对靶机检出 SQLite 注入（banner 3.53.4），枚举出 `items` / `secrets` / `users` 三张表
-- `hydra` / `msfconsole` 未安装时返回真实错误与安装提示，不伪造命中结果
+- 探针离线时网络空间显示 `--`，威胁为空时显示“暂无情报命中”，不再生成合成流量 / 随机威胁
 - `/api/lab/*` 端点：未登录 401、登录后返回真实 JSON；`searchsploit` 返回真实 NVD / KEV 条目
 - 终端无 `SIM` 标记、无随机占位数字；服务不可用时显示错误而不是假数据
 - 无 JavaScript 运行错误

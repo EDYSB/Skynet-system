@@ -290,10 +290,12 @@
             <button class="map-layer" data-map-layer="street">街道</button>
             <button class="map-layer" data-map-layer="gibs">实时卫星</button>
             <button class="map-layer" data-map-layer="rain">降水</button>
+            <button class="map-layer" data-map-layer="offline">离线</button>
           </div>
           <button class="map-tool" id="mapReset">全球</button>
         </div>
         <div class="map-status" id="mapStatus"><i></i>实时事件载入中…</div>
+        <div class="map-offline-note" id="mapOfflineNote" hidden>NO TILE SOURCE · 离线经纬网底图</div>
         <div class="map-coordbar">
           <span id="mapCoords">25.00°N 118.00°E</span>
           <span id="mapZoom">Z 03</span>
@@ -451,12 +453,12 @@
           <div class="head-code">EST.</div>
         </div>
         <div class="protocol-body" id="protocolBody">
-          <div class="proto-row" data-proto="HTTPS"><span>HTTPS</span><div><i style="width:46%"></i></div><b>46%</b></div>
-          <div class="proto-row" data-proto="TCP"><span>TCP</span><div><i style="width:18%"></i></div><b>18%</b></div>
-          <div class="proto-row" data-proto="DNS"><span>DNS</span><div><i style="width:14%"></i></div><b>14%</b></div>
-          <div class="proto-row" data-proto="QUIC"><span>QUIC</span><div><i style="width:12%"></i></div><b>12%</b></div>
-          <div class="proto-row" data-proto="UDP"><span>UDP</span><div><i style="width:7%"></i></div><b>7%</b></div>
-          <div class="proto-row" data-proto="OTHER"><span>其他</span><div><i style="width:3%"></i></div><b>3%</b></div>
+          <div class="proto-row" data-proto="HTTPS"><span>HTTPS</span><div><i style="width:0%"></i></div><b>--</b></div>
+          <div class="proto-row" data-proto="TCP"><span>TCP</span><div><i style="width:0%"></i></div><b>--</b></div>
+          <div class="proto-row" data-proto="DNS"><span>DNS</span><div><i style="width:0%"></i></div><b>--</b></div>
+          <div class="proto-row" data-proto="QUIC"><span>QUIC</span><div><i style="width:0%"></i></div><b>--</b></div>
+          <div class="proto-row" data-proto="UDP"><span>UDP</span><div><i style="width:0%"></i></div><b>--</b></div>
+          <div class="proto-row" data-proto="OTHER"><span>其他</span><div><i style="width:0%"></i></div><b>--</b></div>
         </div>
       </section>
 
@@ -472,8 +474,8 @@
             <div><span>连接类型</span><b id="netType">--</b></div>
             <div><span>在线状态</span><b id="netOnline">--</b></div>
           </div>
-          <div class="link-adapter" id="adapterInfo">本机探针未连接 · 当前为合成演示</div>
-          <p class="link-note">本机网卡计数由本地探针读取；未启动探针时使用合成流量演示。</p>
+          <div class="link-adapter" id="adapterInfo">本机探针未连接 · 无实时数据</div>
+          <p class="link-note">本机网卡计数由本地探针读取；探针未连接时显示 --，不生成替代数据。</p>
         </div>
       </section>
     </aside>
@@ -504,14 +506,13 @@
       </div>
       <div class="cyber-bottom">
         <div class="cyber-metrics">
-          <div><b id="nodesOnline">32</b><span>在线节点</span></div>
-          <div><b id="activeFlows">18.2K</b><span>活跃流</span></div>
-          <div><b id="attacksBlocked">42</b><span>情报命中</span></div>
-          <div><b id="uptimeVal">99.98%</b><span>链路可用率</span></div>
+          <div><b id="nodesOnline">--</b><span>对端主机</span></div>
+          <div><b id="activeFlows">--</b><span>活跃连接</span></div>
+          <div><b id="attacksBlocked">0</b><span>情报条目</span></div>
+          <div><b id="bgpEvents">0</b><span>BGP 事件</span></div>
         </div>
         <div class="cyber-hint" id="cyberHint">真实 BGP / 威胁情报 / 本机连接 · 拓扑为示意</div>
       </div>
-      <div class="attack-toast" id="attackToast"><span>DDoS</span><b>法兰克福节点</b><em>42.6 Gbps</em></div>
     </section>
 
     <aside class="col cyber-right">
@@ -533,9 +534,9 @@
           <div id="flowList"></div>
         </div>
         <div class="flow-summary">
-          <span>入站 62%</span>
-          <div><i style="width:62%"></i></div>
-          <span>出站 38%</span>
+          <span id="flowInbound">--</span>
+          <div><i id="flowBar" style="width:0%"></i></div>
+          <span id="flowOutbound">--</span>
         </div>
       </section>
     </aside>
@@ -599,7 +600,7 @@
           </div>
           <div class="term-output" id="termOutput"></div>
           <div class="term-inputline">
-            <span class="term-prompt">skynet@core:~$</span>
+            <span class="term-prompt" id="termPrompt">skynet@core:~$</span>
             <input id="termInput" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="终端命令">
             <span class="term-caret"></span>
           </div>

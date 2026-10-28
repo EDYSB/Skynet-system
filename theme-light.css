@@ -259,6 +259,12 @@ body::after{
   box-shadow:0 6px 18px rgba(25,55,100,.06);backdrop-filter:blur(8px);
 }
 .map-status i{width:5px;height:5px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 3px rgba(15,159,138,.12)}
+.map-offline-note{
+  position:absolute;top:62px;right:24px;padding:6px 10px;
+  border:1px solid rgba(255,170,60,.5);border-radius:3px;
+  background:rgba(255,176,32,.16);color:#b06b00;
+  font-family:var(--mono);font-size:7.5px;letter-spacing:.08em;
+}
 .map-coordbar{
   position:absolute;left:16px;right:16px;bottom:12px;display:flex;align-items:center;gap:18px;
   padding:7px 12px;background:rgba(255,255,255,.92);border:1px solid var(--line);border-radius:3px;

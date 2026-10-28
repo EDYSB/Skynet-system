@@ -1443,6 +1443,45 @@
   let rainPath = null;
   let rainFrameTime = null;
 
+  /* 最近一次成功的实时数据落 localStorage，断网时用它顶替，并明确标注数据年龄 */
+  const LIVE_CACHE_KEY = 'skynet.events.v1';
+
+  function saveEventsCache(list) {
+    try {
+      localStorage.setItem(LIVE_CACHE_KEY, JSON.stringify({ at: Date.now(), events: list.slice(0, 200) }));
+    } catch (err) { /* ignore */ }
+  }
+
+  function loadEventsCache() {
+    try {
+      const raw = localStorage.getItem(LIVE_CACHE_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data || !Array.isArray(data.events) || !data.events.length) return null;
+      return data;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function cacheAgeLabel(at) {
+    const mins = Math.max(0, Math.round((Date.now() - at) / 60000));
+    if (mins < 1) return '刚刚';
+    if (mins < 60) return `${mins} 分钟前`;
+    const hours = Math.round(mins / 60);
+    if (hours < 48) return `${hours} 小时前`;
+    return `${Math.round(hours / 24)} 天前`;
+  }
+
+  /* 启动时先用上次缓存渲染，避免首屏空白或直接掉到内置样例 */
+  (function bootstrapFromEventsCache() {
+    const cache = loadEventsCache();
+    if (!cache) return;
+    events = cache.events;
+    dataMode = 'cache';
+    lastLiveUpdate = new Date(cache.at);
+  })();
+
   function fetchJSON(url, timeout = 14000) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeout);
@@ -1575,7 +1614,12 @@
   function updateMapStatus() {
     const el = $('#mapStatus');
     if (!el) return;
-    el.innerHTML = `<i></i>${dataMode === 'live' ? `${events.length} 个实时事件` : `${events.length} 个样例事件`}${lastLiveUpdate ? ` · 更新 ${pad(lastLiveUpdate.getHours())}:${pad(lastLiveUpdate.getMinutes())}` : ''}`;
+    const label = dataMode === 'live'
+      ? `${events.length} 个实时事件`
+      : dataMode === 'cache'
+        ? `${events.length} 个缓存事件 · ${cacheAgeLabel(lastLiveUpdate ? lastLiveUpdate.getTime() : Date.now())}`
+        : `${events.length} 个样例事件`;
+    el.innerHTML = `<i></i>${label}${lastLiveUpdate ? ` · 更新 ${pad(lastLiveUpdate.getHours())}:${pad(lastLiveUpdate.getMinutes())}` : ''}`;
     const up = $('#mapUpdated');
     if (up) up.textContent = lastLiveUpdate ? `更新 ${pad(lastLiveUpdate.getHours())}:${pad(lastLiveUpdate.getMinutes())}` : '--';
   }
@@ -1625,10 +1669,24 @@
     const merged = [...natural, ...quakes];
 
     if (!merged.length) {
-      setLiveStatus('sample', '离线样例 · 数据源不可达');
-      dataMode = 'sample';
+      const cache = loadEventsCache();
+      if (cache) {
+        events = cache.events;
+        dataMode = 'cache';
+        lastLiveUpdate = new Date(cache.at);
+        if (!events.some(e => e.key === selectedKey)) selectedKey = pickFocusEvent(events).key;
+        rebuildGlobeEvents();
+        rebuildMapMarkers();
+        selectEvent(selectedKey, { silent: true });
+        updateEventCount();
+        setLiveStatus('sample', `离线 · 使用缓存（${cacheAgeLabel(cache.at)}）`);
+        if (manual) addLog(`数据源不可达，改用 <b>${cacheAgeLabel(cache.at)}</b> 的缓存数据。`, '警报', 'warn');
+      } else {
+        dataMode = 'sample';
+        setLiveStatus('sample', '离线 · 无缓存，显示内置样例');
+        if (manual) addLog('数据源不可达且没有缓存，显示内置样例。', '警报', 'warn');
+      }
       updateMapStatus();
-      if (manual) addLog('实时数据源暂不可达，已保留离线样例。', '警报', 'warn');
       liveLoading = false;
       if (refreshBtn) refreshBtn.classList.remove('spinning');
       return;
@@ -1638,6 +1696,7 @@
     events = merged;
     dataMode = 'live';
     lastLiveUpdate = new Date();
+    saveEventsCache(merged);
 
     if (!events.some(e => e.key === selectedKey)) {
       selectedKey = pickFocusEvent(events).key;
@@ -1717,9 +1776,48 @@
       { maxNativeZoom: 9, maxZoom: 18, className: 'map-base-tiles', attribution: 'NASA GIBS' }
     );
 
+    /* 离线底图：不依赖任何瓦片服务，画经纬网 + 度数标注 */
+    const OfflineGraticule = L.GridLayer.extend({
+      createTile(coords) {
+        const size = this.getTileSize();
+        const tile = document.createElement('canvas');
+        tile.width = size.x;
+        tile.height = size.y;
+        const ctx = tile.getContext('2d');
+        ctx.fillStyle = '#03070d';
+        ctx.fillRect(0, 0, size.x, size.y);
+        ctx.strokeStyle = 'rgba(64,150,190,.16)';
+        ctx.lineWidth = 1;
+        for (let x = 0; x <= size.x; x += 32) {
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, size.y); ctx.stroke();
+        }
+        for (let y = 0; y <= size.y; y += 32) {
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(size.x, y); ctx.stroke();
+        }
+        if (this._map && coords && typeof coords.scaleBy === 'function') {
+          const nw = this._map.unproject(coords.scaleBy(size), coords.z);
+          ctx.fillStyle = 'rgba(90,190,230,.55)';
+          ctx.font = '10px ui-monospace, Consolas, monospace';
+          ctx.fillText(`${Math.abs(nw.lat).toFixed(1)}${nw.lat >= 0 ? 'N' : 'S'}`, 6, 14);
+          ctx.fillText(`${Math.abs(nw.lng).toFixed(1)}${nw.lng >= 0 ? 'E' : 'W'}`, 6, 27);
+        }
+        return tile;
+      }
+    });
+    mapLayers.offline = new OfflineGraticule({ tileSize: 256, maxZoom: 18, attribution: 'OFFLINE GRATICULE' });
+
     mapBaseLayer = mapLayers.sat;
     mapBaseLayer.addTo(map);
     mapMarkerLayer = L.layerGroup().addTo(map);
+
+    let tileErrors = 0;
+    map.on('tileerror', () => {
+      tileErrors += 1;
+      if (tileErrors === 6 && mapBase !== 'offline') {
+        setMapBase('offline');
+        setLiveStatus('sample', '地图瓦片不可达 · 已切换到离线经纬网');
+      }
+    });
 
     L.control.zoom({ position: 'bottomright' }).addTo(map);
     L.control.scale({ position: 'bottomleft', imperial: false, maxWidth: 90 }).addTo(map);
@@ -1747,9 +1845,11 @@
     mapBaseLayer = next;
     mapBaseLayer.addTo(map);
     mapBase = name;
-    $$('.map-layer[data-map-layer="sat"], .map-layer[data-map-layer="street"], .map-layer[data-map-layer="gibs"]').forEach(btn => {
+    $$('.map-layer[data-map-layer="sat"], .map-layer[data-map-layer="street"], .map-layer[data-map-layer="gibs"], .map-layer[data-map-layer="offline"]').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.mapLayer === name);
     });
+    const note = $('#mapOfflineNote');
+    if (note) note.hidden = name !== 'offline';
     if (radarLayer && radarOn) radarLayer.bringToFront();
   }
 
@@ -1892,17 +1992,6 @@
     { a: 0, b: 6, color: '#2b6bff', speed: 0.00015, phase: 0.5 }
   ];
 
-  const THREAT_TEMPLATES = [
-    { tag: 'DDoS', level: 'high', text: '持续流量洪泛，目标法兰克福边缘节点', target: '法兰克福', value: '42.6 Gbps' },
-    { tag: 'SCAN', level: 'mid', text: '来自 198.51.100.24 的横向端口扫描', target: '上海', value: '1,842 ports/min' },
-    { tag: 'DNS', level: 'high', text: '高熵域名查询命中 DNS 隧道特征', target: '弗吉尼亚', value: '3.8K qps' },
-    { tag: 'TLS', level: 'mid', text: '异常 TLS 指纹与自签名证书链', target: '新加坡', value: 'SNI mismatch' },
-    { tag: 'BOT', level: 'mid', text: 'IoT 僵尸网络活动较基线上升', target: '东京', value: '+38%' },
-    { tag: 'ANOMALY', level: 'low', text: '夜间时段出口流量偏离基线 3.4σ', target: '北京', value: '3.4σ' },
-    { tag: 'BGP', level: 'high', text: '检测到异常路由前缀宣告', target: '伦敦', value: '/24 hijack' }
-  ];
-
-  const CITY_POOL = ['北京', '上海', '新加坡', '东京', '法兰克福', '伦敦', '弗吉尼亚', '旧金山', '圣保罗', '悉尼', '迪拜', '孟买'];
   const CYBER_PROBE_URL = (location.protocol === 'http:' || location.protocol === 'https:')
     ? '/api/netstats'
     : 'http://127.0.0.1:8792/api/netstats';
@@ -1925,11 +2014,12 @@
   let earthTickerText = '';
   let cyberTickerTimer = null;
   let lastTotalMbps = 0;
-  let attacksBlocked = 42;
+  let attacksBlocked = 0;
   let realFeed = null;
   let realFeedActive = false;
   let realConnectionCount = null;
   let latestBgp = null;
+  let bgpEventCount = 0;
   let cyberMapBound = false;
 
   const cyberCam = {
@@ -1978,13 +2068,20 @@
   }
 
   function cyberTicker() {
+    if (!probeLive) {
+      updateTickerText(
+        `本机探针未连接 · 无实时吞吐数据 · BGP ${latestBgp ? `${latestBgp.prefix} · AS${latestBgp.origin}` : '等待 RIS 流'} · ` +
+        `情报条目 ${attacksBlocked} · BGP 事件 ${bgpEventCount} · 拓扑为示意 ·`
+      );
+      return;
+    }
     const total = cyberMetrics.down + cyberMetrics.up;
-    const flows = realConnectionCount == null ? Math.round(cyberMetrics.flows) : realConnectionCount;
+    const flows = realConnectionCount == null ? '--' : realConnectionCount;
     const bgp = latestBgp ? `${latestBgp.prefix} · AS${latestBgp.origin}` : '等待 RIS 流';
     updateTickerText(
       `实时吞吐 ${total.toFixed(1)} Mbps · 下行 ${cyberMetrics.down.toFixed(1)} · 上行 ${cyberMetrics.up.toFixed(1)} · ` +
-      `本机 TCP ${flows} · BGP ${bgp} · 情报命中 ${attacksBlocked} · ` +
-      `本机探针 ${probeLive ? '在线' : '未连接'} · 真实 BGP / 威胁情报 / 本机连接 · 拓扑为示意 ·`
+      `本机 TCP ${flows} · BGP ${bgp} · 情报条目 ${attacksBlocked} · BGP 事件 ${bgpEventCount} · ` +
+      `真实 BGP / 威胁情报 / 本机连接 · 拓扑为示意 ·`
     );
   }
 
@@ -2009,36 +2106,16 @@
     };
     cyberImage.src = EARTH_TEXTURES.night;
 
-    for (let i = 0; i < 64; i++) {
-      const base = 700 + Math.sin(i * 0.28) * 140 + Math.cos(i * 0.11) * 90;
-      cyberMetrics.historyDown.push(base * 0.72);
-      cyberMetrics.historyUp.push(base * 0.28);
-    }
-    cyberMetrics.down = 612.4;
-    cyberMetrics.up = 230.2;
-    cyberMetrics.pps = 128400;
-    lastTotalMbps = cyberMetrics.down + cyberMetrics.up;
-
     resizeCyber();
     bindCyberMap();
     if (window.ResizeObserver) new ResizeObserver(resizeCyber).observe($('#cyberStage'));
     else window.addEventListener('resize', resizeCyber);
-
-    addThreat({ tag: 'DDoS', level: 'high', text: '持续流量洪泛，目标法兰克福边缘节点', target: '法兰克福', value: '42.6 Gbps' }, true);
-    addThreat({ tag: 'DNS', level: 'mid', text: '高熵域名查询命中 DNS 隧道特征', target: '弗吉尼亚', value: '3.8K qps' }, true);
-    addThreat({ tag: 'SCAN', level: 'low', text: '来自 192.0.2.18 的低速端口探测已阻断', target: '北京', value: 'blocked' }, true);
-    addThreat({ tag: 'TLS', level: 'mid', text: '异常 TLS 指纹与自签名证书链', target: '新加坡', value: 'SNI mismatch' }, true);
-    addThreat({ tag: 'BOT', level: 'mid', text: 'IoT 僵尸网络活动较基线上升', target: '东京', value: '+38%' }, true);
-
-    for (let i = 0; i < 8; i++) addFlow(true);
 
     updateTrafficUI();
     drawTrafficChart();
     updateProbeUI(false);
 
     setInterval(updateTraffic, 800);
-    setInterval(() => { if (!realFeedActive) addThreat(); }, 7200);
-    setInterval(() => { if (!realFeedActive) addFlow(); }, 1500);
     setInterval(updateProtocols, 3400);
     setInterval(updateLinkInfo, 4500);
     probeTimer = setInterval(probeNetwork, 2200);
@@ -2398,33 +2475,27 @@
   }
 
   function updateTraffic() {
-    let down, up, pps, flows, loss;
-    if (probeLive && probeLast && probeLast.totals) {
-      down = (Number(probeLast.totals.rxBps) || 0) * 8 / 1e6;
-      up = (Number(probeLast.totals.txBps) || 0) * 8 / 1e6;
-      pps = ((Number(probeLast.totals.rxBps) || 0) + (Number(probeLast.totals.txBps) || 0)) / 1100;
-      flows = Number(probeLast.connections) || Math.round(800 + pps * 0.06);
-      loss = Number(probeLast.loss) || 0;
-    } else {
-      const t = Date.now() / 1000;
-      const base = 780 + Math.sin(t * 0.21) * 170 + Math.sin(t * 0.067) * 120 + (Math.random() - 0.5) * 36;
-      down = base * 0.72;
-      up = base * 0.28;
-      pps = 92000 + Math.sin(t * 0.4) * 18000 + Math.random() * 5200;
-      flows = 17600 + Math.sin(t * 0.09) * 1800 + Math.random() * 340;
-      loss = 0.012 + Math.random() * 0.02;
-    }
+    const live = !!(probeLive && probeLast && probeLast.totals);
+    const totals = (probeLast && probeLast.totals) || {};
+    const down = live ? (Number(totals.rxBps) || 0) * 8 / 1e6 : 0;
+    const up = live ? (Number(totals.txBps) || 0) * 8 / 1e6 : 0;
+    const pps = live ? ((Number(totals.rxBps) || 0) + (Number(totals.txBps) || 0)) / 1100 : 0;
+    const loss = live ? (Number(probeLast.loss) || 0) : 0;
 
+    cyberMetrics.live = live;
     cyberMetrics.down = Math.max(0, down);
     cyberMetrics.up = Math.max(0, up);
     cyberMetrics.pps = Math.max(0, pps);
-    cyberMetrics.flows = Math.max(0, flows);
+    cyberMetrics.flows = realConnectionCount == null ? 0 : realConnectionCount;
     cyberMetrics.loss = loss;
 
-    cyberMetrics.historyDown.push(cyberMetrics.down);
-    cyberMetrics.historyUp.push(cyberMetrics.up);
-    if (cyberMetrics.historyDown.length > 72) cyberMetrics.historyDown.shift();
-    if (cyberMetrics.historyUp.length > 72) cyberMetrics.historyUp.shift();
+    /* 探针离线时不推进曲线，避免出现"看起来在跑"的假历史 */
+    if (live) {
+      cyberMetrics.historyDown.push(cyberMetrics.down);
+      cyberMetrics.historyUp.push(cyberMetrics.up);
+      if (cyberMetrics.historyDown.length > 72) cyberMetrics.historyDown.shift();
+      if (cyberMetrics.historyUp.length > 72) cyberMetrics.historyUp.shift();
+    }
 
     updateTrafficUI();
     drawTrafficChart();
@@ -2432,24 +2503,31 @@
   }
 
   function updateTrafficUI() {
+    const live = !!cyberMetrics.live;
     const total = cyberMetrics.down + cyberMetrics.up;
-    const trend = lastTotalMbps ? ((total - lastTotalMbps) / Math.max(lastTotalMbps, 0.001)) * 100 : 0;
-    lastTotalMbps = total;
+    const trend = live && lastTotalMbps ? ((total - lastTotalMbps) / Math.max(lastTotalMbps, 0.001)) * 100 : 0;
+    if (live) lastTotalMbps = total;
     const m = $('#thrMbps');
-    if (m) m.textContent = total >= 100 ? total.toFixed(1) : total.toFixed(2);
-    const d = $('#thrDown'); if (d) d.textContent = cyberMetrics.down.toFixed(cyberMetrics.down < 10 ? 2 : 1);
-    const u = $('#thrUp'); if (u) u.textContent = cyberMetrics.up.toFixed(cyberMetrics.up < 10 ? 2 : 1);
+    if (m) m.textContent = live ? (total >= 100 ? total.toFixed(1) : total.toFixed(2)) : '--';
+    const d = $('#thrDown');
+    if (d) d.textContent = live ? cyberMetrics.down.toFixed(cyberMetrics.down < 10 ? 2 : 1) : '--';
+    const u = $('#thrUp');
+    if (u) u.textContent = live ? cyberMetrics.up.toFixed(cyberMetrics.up < 10 ? 2 : 1) : '--';
     const tr = $('#thrTrend');
     if (tr) {
-      tr.textContent = `${trend >= 0 ? '↑' : '↓'} ${Math.abs(trend).toFixed(1)}%`;
-      tr.className = trend >= 0 ? 'up' : 'down';
+      tr.textContent = live ? `${trend >= 0 ? '↑' : '↓'} ${Math.abs(trend).toFixed(1)}%` : 'NO PROBE';
+      tr.className = live ? (trend >= 0 ? 'up' : 'down') : 'down';
     }
-    const p = $('#ppsVal'); if (p) p.textContent = fmtNum(cyberMetrics.pps);
-    const shownFlows = realConnectionCount == null ? cyberMetrics.flows : realConnectionCount;
-    const f = $('#flowVal'); if (f) f.textContent = Math.round(shownFlows).toLocaleString();
-    const l = $('#lossVal'); if (l) l.textContent = `${cyberMetrics.loss.toFixed(2)}%`;
-    const af = $('#activeFlows'); if (af) af.textContent = fmtNum(shownFlows);
-    const ab = $('#attacksBlocked'); if (ab) ab.textContent = attacksBlocked;
+    const p = $('#ppsVal');
+    if (p) p.textContent = live ? fmtNum(cyberMetrics.pps) : '--';
+    const f = $('#flowVal');
+    if (f) f.textContent = realConnectionCount == null ? '--' : String(realConnectionCount);
+    const l = $('#lossVal');
+    if (l) l.textContent = live ? `${cyberMetrics.loss.toFixed(2)}%` : '--';
+    const af = $('#activeFlows');
+    if (af) af.textContent = realConnectionCount == null ? '--' : String(realConnectionCount);
+    const ab = $('#attacksBlocked');
+    if (ab) ab.textContent = String(attacksBlocked);
   }
 
   function drawTrafficChart() {
@@ -2501,63 +2579,34 @@
     pathFor(up, '#5ff0e0', 'rgba(95,240,224,.12)');
   }
 
-  function addThreat(preset, silent = false) {
+  const threatIds = new Set();
+
+  function addThreat(preset) {
     const list = $('#threatList');
-    if (!list) return;
-    const t = preset || THREAT_TEMPLATES[Math.floor(Math.random() * THREAT_TEMPLATES.length)];
+    if (!list || !preset) return;          /* 只显示真实情报，没有就不显示 */
+    const t = preset;
+    if (t.id) threatIds.add(t.id);
     const li = document.createElement('li');
-    li.className = `threat-item ${t.level}`;
+    li.className = `threat-item ${t.level || 'mid'}`;
     const now = new Date();
     li.innerHTML = `
       <div class="threat-top">
-        <span class="threat-tag">${escapeHtml(t.tag)}</span>
+        <span class="threat-tag">${escapeHtml(t.tag || 'CVE')}</span>
         <span class="threat-time">${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}</span>
       </div>
-      <p>${escapeHtml(t.text)}</p>
-      <em>${escapeHtml(t.target)} · ${escapeHtml(t.value)}</em>`;
+      <p>${escapeHtml(t.text || '--')}</p>
+      <em>${escapeHtml(t.target || '--')} · ${escapeHtml(t.value || '--')}</em>`;
     list.prepend(li);
     while (list.children.length > 5) list.lastElementChild.remove();
 
-    if (t.level === 'high') {
-      attacksBlocked++;
-      const ab = $('#attacksBlocked'); if (ab) ab.textContent = attacksBlocked;
-      if (!silent) showAttackToast(t);
-    }
-  }
-
-  function showAttackToast(t) {
-    const toast = $('#attackToast');
-    if (!toast) return;
-    toast.querySelector('span').textContent = t.tag;
-    toast.querySelector('b').textContent = `${t.target}节点`;
-    toast.querySelector('em').textContent = t.value;
-    toast.classList.add('show');
-    clearTimeout(showAttackToast._timer);
-    showAttackToast._timer = setTimeout(() => toast.classList.remove('show'), 4200);
+    attacksBlocked = threatIds.size || list.children.length;
+    const ab = $('#attacksBlocked');
+    if (ab) ab.textContent = String(attacksBlocked);
   }
 
   function addFlow(silent = false) {
-    const list = $('#flowList');
-    if (!list) return;
-    const proto = ['TLS 1.3', 'QUIC', 'HTTPS', 'DNS', 'TCP'][Math.floor(Math.random() * 5)];
-    const state = Math.random() > 0.14 ? 'ALLOWED' : 'BLOCKED';
-    const srcCity = CITY_POOL[Math.floor(Math.random() * CITY_POOL.length)];
-    const dstCity = CITY_POOL[Math.floor(Math.random() * CITY_POOL.length)];
-    const src = `10.${20 + Math.floor(Math.random() * 40)}.${Math.floor(Math.random() * 200)}.${10 + Math.floor(Math.random() * 240)}`;
-    const dst = `198.51.100.${10 + Math.floor(Math.random() * 240)}`;
-    const row = document.createElement('div');
-    row.className = 'flow-row';
-    row.innerHTML = `
-      <span class="fl-src"><b>${src}</b><em>${srcCity}</em></span>
-      <span class="fl-dst"><b>${dst}</b><em>${dstCity}</em></span>
-      <span class="fl-proto">${proto}</span>
-      <span class="fl-state ${state === 'ALLOWED' ? 'ok' : 'blocked'}">${state}</span>`;
-    list.prepend(row);
-    while (list.children.length > 10) list.lastElementChild.remove();
-    if (!silent) {
-      const fc = $('#flowCount');
-      if (fc) fc.textContent = fmtNum(cyberMetrics.flows);
-    }
+    /* 已移除合成连接：本机连接由 SSE 的真实 snapshot 推送 */
+    return silent;
   }
 
   /* ---------- 实时数据：SSE / BGP / 威胁 / 本机 TCP ---------- */
@@ -2592,6 +2641,9 @@
   function handleBgpEvent(ev) {
     if (!ev || !ev.prefix) return;
     latestBgp = ev;
+    bgpEventCount += 1;
+    const be = $('#bgpEvents');
+    if (be) be.textContent = String(bgpEventCount);
     const prefix = $('#cyberBgpPrefix');
     const detail = $('#cyberBgpDetail');
     if (prefix) prefix.textContent = ev.prefix;
@@ -2631,11 +2683,30 @@
     if (fv) fv.textContent = String(count);
     const af = $('#activeFlows');
     if (af) af.textContent = String(count);
+    const hosts = new Set((data.connections || []).map(c => c.remote).filter(Boolean));
+    const no = $('#nodesOnline');
+    if (no) no.textContent = String(hosts.size);
+    const ib = $('#flowInbound');
+    const ob = $('#flowOutbound');
+    const fb = $('#flowBar');
+    if (ib) ib.textContent = count ? `${count} 条 ESTABLISHED` : '无外部连接';
+    if (ob) ob.textContent = count ? `${hosts.size} 台对端` : '--';
+    if (fb) fb.style.width = count ? '100%' : '0%';
     updateProtocolFromConnections(data.connections || []);
   }
 
   function updateProtocolFromConnections(rows) {
-    if (!rows.length) return;
+    const dom = $$('#protocolBody .proto-row');
+    if (!rows.length) {
+      /* 没有真实连接就把静态示例条清空，不留假百分比 */
+      dom.forEach(row => {
+        const bar = row.querySelector('i');
+        const b = row.querySelector('b');
+        if (bar) bar.style.width = '0%';
+        if (b) b.textContent = '--';
+      });
+      return;
+    }
     const buckets = { HTTPS: 0, TCP: 0, DNS: 0, QUIC: 0, UDP: 0, OTHER: 0 };
     rows.forEach(c => {
       const p = Number(c.remotePort);
@@ -2645,7 +2716,6 @@
       else buckets.OTHER++;
     });
     const total = Math.max(1, rows.length);
-    const dom = $$('#protocolBody .proto-row');
     dom.forEach(row => {
       const key = row.dataset.proto;
       const value = key === 'UDP' ? 0 : key === 'QUIC' ? 0 : (buckets[key] || 0);
@@ -2677,7 +2747,9 @@
         const list = $('#threatList');
         if (list) {
           list.innerHTML = '';
-          (data.threats || []).slice().reverse().forEach(t => addThreat(t, true));
+          const threats = (data.threats || []).slice().reverse();
+          threats.forEach(t => addThreat(t));
+          if (!threats.length) list.innerHTML = '<li class="threat-empty">暂无情报命中 · CISA KEV 未返回条目</li>';
         }
         renderConnections({ connections: data.connections || [] });
         if (data.bgp && data.bgp.length) handleBgpEvent(data.bgp[0]);
@@ -2693,7 +2765,7 @@
       try {
         const threat = JSON.parse(event.data);
         realFeedActive = true;
-        addThreat(threat, true);
+        addThreat(threat);
       } catch (err) { /* ignore */ }
     });
     realFeed.addEventListener('bgp', event => {
@@ -2709,19 +2781,8 @@
   }
 
   function updateProtocols() {
-    if (realFeedActive) return;
-    const base = [46, 18, 14, 12, 7, 3];
-    const jitter = base.map(v => v + (Math.random() - 0.5) * 4);
-    const sum = jitter.reduce((a, b) => a + b, 0);
-    const normalized = jitter.map(v => Math.max(1, Math.round(v / sum * 100)));
-    const rows = $$('#protocolBody .proto-row');
-    rows.forEach((row, i) => {
-      const val = normalized[i];
-      const bar = row.querySelector('i');
-      const b = row.querySelector('b');
-      if (bar) bar.style.width = `${val}%`;
-      if (b) b.textContent = `${val}%`;
-    });
+    /* 没有真实连接时保持空态，不再生成随机占比 */
+    if (!realFeedActive) updateProtocolFromConnections([]);
   }
 
   async function probeNetwork() {
@@ -2760,7 +2821,7 @@
   function updateProbeUI(live) {
     const ps = $('#probeStatus');
     if (ps) {
-      ps.innerHTML = live ? '<i></i>本机探针 · 实时' : '<i></i>合成流量 · 演示';
+      ps.innerHTML = live ? '<i></i>本机探针 · 实时' : '<i></i>探针未连接 · 无数据';
       ps.classList.toggle('probe-live', live);
     }
     const pl = $('#probeLink');
@@ -2887,13 +2948,18 @@
   let termNetTimer = null;
   let termClockTimer = null;
   let termProbeTimer = null;
+  let termCwd = '';          /* workspace-relative cwd, '' = project root */
+  let termRootPath = '';     /* absolute project root reported by /api/files */
+  let termPyMode = false;    /* python 交互模式 */
 
   const TERM_COMMANDS = [
     'help', 'status', 'events', 'event', 'focus', 'earth', 'map', 'net', 'refresh',
     'probe', 'ops', 'tools', 'recon', 'nmap', 'scan', 'web', 'vuln', 'audit', 'searchsploit',
-    'msf', 'hydra', 'sqlmap', 'sqli', 'payload', 'scope', 'target', 'report', 'hash',
-    'sys', 'neofetch', 'ls', 'cat', 'ping', 'clear', 'banner', 'reboot',
-    'date', 'whoami', 'hostname', 'uptime', 'uname', 'ifconfig', 'exit', 'sudo', 'rm'
+    'msf', 'lab', 'toolkit', 'sqlmap', 'sqli', 'payload', 'scope', 'target', 'report', 'hash',
+    'sys', 'systeminfo', 'ls', 'cat', 'ping', 'clear', 'banner', 'reboot',
+    'cd', 'chdir', 'dir', 'type', 'cls', 'echo', 'pwd', 'tree', 'cartoon', 'python', 'py',
+    'ipconfig', 'ver', 'tasklist', 'netstat',
+    'date', 'whoami', 'hostname', 'uptime', 'exit'
   ];
 
   const TERM_BANNER = [
@@ -2909,6 +2975,21 @@
     if (termOut) termOut.scrollTop = termOut.scrollHeight;
   }
 
+  function termSleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /* 可原地更新的行，用于扫描进度条 */
+  function termLiveLine(html = '', cls = '') {
+    if (!termOut) return null;
+    const div = document.createElement('div');
+    div.className = `term-line ${cls}`;
+    div.innerHTML = html;
+    termOut.appendChild(div);
+    termScroll();
+    return div;
+  }
+
   function termLine(html = '', cls = '') {
     if (!termOut) return;
     const div = document.createElement('div');
@@ -2919,8 +3000,410 @@
     termScroll();
   }
 
+  function termPromptText() {
+    if (termPyMode) return '>>>';
+    return `skynet@core:${termCwd ? `~/${termCwd}` : '~'}$`;
+  }
+
+  function termSyncPrompt() {
+    const el = document.getElementById('termPrompt');
+    if (el) el.textContent = termPromptText();
+  }
+
   function termEcho(cmd) {
-    termLine(`<span style="color:#4fffd7">skynet@core:~$</span> <span style="color:#e4fffa">${escapeHtml(cmd)}</span>`);
+    const prompt = termPromptText();
+    termLine(`<span style="color:#4fffd7">${escapeHtml(prompt)}</span> <span style="color:#e4fffa">${escapeHtml(cmd)}</span>`);
+    termSyncPrompt();
+  }
+
+  /* ---- cmd.exe 风格路径解析（限制在项目目录内） ---- */
+  function termResolvePath(input) {
+    let raw = String(input == null ? '' : input).trim().replace(/^"+|"+$/g, '');
+    if (!raw || raw === '.') return termCwd;
+    if (raw === '~' || raw === '/' || raw === '\\') return '';
+    /* 允许直接粘贴项目绝对路径 */
+    if (termRootPath && raw.toLowerCase().startsWith(termRootPath.toLowerCase())) {
+      raw = raw.slice(termRootPath.length).replace(/^[\\/]+/, '');
+      if (!raw) return '';        /* 正好是项目根 */
+    }
+    const absolute = /^[\\/]/.test(raw) || /^[A-Za-z]:/.test(raw);
+    const segments = absolute ? [] : termCwd.split('/').filter(Boolean);
+    raw.split(/[\\/]+/).filter(Boolean).forEach(seg => {
+      if (seg === '.') return;
+      if (seg === '..') { segments.pop(); return; }
+      segments.push(seg);
+    });
+    return segments.join('/');
+  }
+
+  function termAbsPath(rel) {
+    const root = termRootPath || 'C:\\SKYNET';
+    const parts = String(rel || '').split('/').filter(Boolean);
+    return [root.replace(/[\\/]+$/, ''), ...parts].join('\\');
+  }
+
+  /* ---- cartoon：60 秒二进制雨，20fps 刷屏，像 dir /S ---- */
+  function termCartoon() {
+    if (!termOut) return;
+    if (termCartoon._running) { termLine('cartoon: already running · press any key to stop', 'warn'); return; }
+    termCartoon._running = true;
+
+    /* 按终端实际宽度算列数：用一个隐藏探针量出单字符宽度 */
+    function measureCols() {
+      try {
+        const probe = document.createElement('span');
+        probe.textContent = '0'.repeat(50);
+        probe.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;white-space:pre;font-family:inherit;font-size:inherit;letter-spacing:inherit';
+        termOut.appendChild(probe);
+        const per = probe.getBoundingClientRect().width / 50;
+        probe.remove();
+        const avail = (termOut.clientWidth || 0) - 16;
+        if (per > 0.4 && avail > 200) {
+          return Math.max(40, Math.min(260, Math.floor(avail / per)));
+        }
+      } catch (err) { /* ignore */ }
+      return 90;
+    }
+
+    const W = measureCols();
+    const H = 5;
+    const DURATION = 60000;
+    const FRAME_MS = 50;
+    const MAX_CHILDREN = 600;
+    const DIM = ['#1f5f52', '#2a7a68', '#3fa98f'];
+    const BRIGHT = '#8bffd9';
+
+    const rnd = n => Math.floor(Math.random() * n);
+    const barOf = (pct, width = 20) => {
+      const filled = Math.round(pct / 100 * width);
+      return `${'█'.repeat(filled)}${'░'.repeat(width - filled)}`;
+    };
+
+    function termBurst(htmlLines, color) {
+      if (!htmlLines.length) return;
+      const frag = document.createDocumentFragment();
+      htmlLines.forEach(html => {
+        const div = document.createElement('div');
+        div.className = 'term-line';
+        if (color) div.style.color = color;
+        div.style.whiteSpace = 'pre';
+        div.innerHTML = html;
+        frag.appendChild(div);
+      });
+      termOut.appendChild(frag);
+      while (termOut.children.length > MAX_CHILDREN) termOut.firstElementChild.remove();
+      termScroll();
+    }
+
+    /* 每列一条雨滴：pos 为头部位置，len 为拖尾长度 */
+    const cols = Array.from({ length: W }, () => ({
+      pos: -rnd(40),
+      len: 2 + rnd(5),
+      speed: 1 + rnd(3)
+    }));
+
+    let stopped = false;
+    let timer = null;
+    let lastStatus = -1;
+    let frames = 0;
+    const t0 = performance.now();
+
+    function paint() {
+      const rows = [];
+      for (let y = 0; y < H; y++) {
+        let html = '';
+        let buf = '';
+        let runLit = null;
+        const flush = () => {
+          if (!buf) return;
+          html += `<span style="color:${runLit ? BRIGHT : DIM[rnd(DIM.length)]}">${buf}</span>`;
+          buf = '';
+        };
+        for (let x = 0; x < W; x++) {
+          const c = cols[x];
+          const dist = c.pos - y;
+          const lit = dist >= 0 && dist < c.len;
+          const ch = lit || Math.random() < 0.07 ? '1' : '0';
+          if (lit !== runLit) { flush(); runLit = lit; }
+          buf += ch;
+        }
+        flush();
+        rows.push(html);
+      }
+      return rows;
+    }
+
+    function step() {
+      cols.forEach(c => {
+        c.pos += c.speed;
+        if (c.pos > H + 4) {
+          c.pos = -rnd(24);
+          c.len = 2 + rnd(5);
+          c.speed = 1 + rnd(3);
+        }
+      });
+    }
+
+    function draw() {
+      if (stopped) return;
+      const elapsed = performance.now() - t0;
+      if (elapsed >= DURATION) { stop('finished'); return; }
+
+      frames += 1;
+      step();
+      termBurst(paint());
+
+      const sec = elapsed / 1000;
+      const tick = Math.floor(sec / 5);
+      if (tick !== lastStatus) {
+        lastStatus = tick;
+        const pct = Math.round(elapsed / DURATION * 100);
+        const clock = `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+        termBurst([`<span class="dim">┄┄ ${clock} · BINARY STREAM · [${barOf(pct)}] ${String(pct).padStart(3, ' ')}% · ${frames} frames</span>`]);
+      }
+    }
+
+    function stop(reason) {
+      if (stopped) return;
+      stopped = true;
+      termCartoon._running = false;
+      if (timer) clearInterval(timer);
+      document.removeEventListener('keydown', onKey, true);
+      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      termLine(`<span class="dim">cartoon · ${reason} · ${secs}s · ${frames} frames</span>`);
+      if (reason === 'finished') {
+        termBurst([
+          '<span class="ok">╔══════════════════════════════════════════════════════════════╗</span>',
+          '<span class="ok">║  0 1 0 0 1 0 1 1 0   S T R E A M   E N D   1 0 1 1 0 0 1 0  ║</span>',
+          '<span class="ok">╚══════════════════════════════════════════════════════════════╝</span>'
+        ]);
+      }
+    }
+    function onKey() { stop('stopped by key'); }
+
+    termLine('<span class="dim">cartoon · binary rain · 20fps · 60s · any key stops</span>');
+    document.addEventListener('keydown', onKey, true);
+    /* 预热：先把版面铺满，避免开头几秒只有零星几行 */
+    for (let i = 0; i < 14; i++) { step(); termBurst(paint()); }
+    draw();
+    timer = setInterval(draw, FRAME_MS);
+  }
+
+  async function termPost(pathname, payload) {
+    const res = await fetch(pathname, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      cache: 'no-store'
+    });
+    let data = null;
+    try { data = await res.json(); } catch (err) { data = null; }
+    if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+    if (!data) throw new Error('bad response');
+    return data;
+  }
+
+  async function termPythonExec(code) {
+    if (location.protocol === 'file:') { termLine('python: local service required · run start.bat', 'warn'); return; }
+    if (!String(code || '').trim()) return;
+    let d;
+    try {
+      d = await termPost('/api/python', { code });
+    } catch (err) {
+      termLine(`python: ${escapeHtml(String(err.message || err))}`, 'err');
+      return;
+    }
+    const out = String(d.stdout || '').replace(/\s+$/, '');
+    const errText = String(d.stderr || '').replace(/\s+$/, '');
+    if (out) out.split(/\r?\n/).slice(0, 60).forEach(line => termLine(escapeHtml(line)));
+    if (errText) errText.split(/\r?\n/).slice(0, 40).forEach(line => termLine(`<span class="err">${escapeHtml(line)}</span>`));
+    if (!out && !errText && d.ok) termLine('<span class="dim">(no output)</span>');
+    if (!d.ok) termLine(`<span class="dim">exit ${d.exitCode}${d.timedOut ? ' · timeout' : ''}</span>`);
+  }
+
+  async function termPython(arg) {
+    const code = String(arg || '').trim();
+    if (!code) {
+      termPyMode = true;
+      termSyncPrompt();
+      termLine('<span class="ok">Python 3</span> <span class="dim">· 每行独立执行（变量不跨行）· exit() 退出</span>');
+      return;
+    }
+    await termPythonExec(code);
+  }
+
+  async function termTree(arg) {
+    if (location.protocol === 'file:') { termLine('tree: local service required · run start.bat', 'warn'); return; }
+    const raw = String(arg || '').trim();
+    const fast = /(^|\s)(-f|--fast)(\s|$)/.test(raw);
+    const parts = raw.replace(/(^|\s)(-f|--fast)(?=\s|$)/g, ' ').split(/\s+/).filter(Boolean);
+    const rel = termResolvePath(parts[0] || '.');
+    const depth = Math.min(8, Math.max(1, parseInt(parts[1], 10) || 3));
+
+    const W = 62;
+    const rule = (l, r, ch) => l + ch.repeat(W) + r;
+    const pad = text => {
+      const width = W - 2;
+      let t = String(text);
+      if (t.length > width) t = `${t.slice(0, width - 1)}…`;
+      return `║ ${t}${' '.repeat(Math.max(0, width - t.length))} ║`;
+    };
+    const barOf = (pct, width = 26) => {
+      const filled = Math.max(0, Math.min(width, Math.round(pct / 100 * width)));
+      return `${'█'.repeat(filled)}${'░'.repeat(width - filled)}`;
+    };
+
+    if (!fast) {
+      termLine(`<span class="ok">${rule('╔', '╗', '═')}</span>`);
+      termLine(`<span class="ok">${pad('')}</span>`);
+      termLine(`<span class="ok">${pad('S K Y N E T   ·   W O R K S P A C E   S C A N')}</span>`);
+      termLine(`<span class="ok">${pad('')}</span>`);
+      termLine(`<span class="ok">${rule('╚', '╝', '═')}</span>`);
+      const spin = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'];
+      const boot = termLiveLine(`<span class="dim">  ${spin[0]} linking workspace index …</span>`);
+      for (let i = 0; i < 8; i++) {
+        await termSleep(55);
+        if (boot) boot.innerHTML = `<span class="dim">  ${spin[i % spin.length]} linking workspace index …</span>`;
+      }
+      if (boot) boot.innerHTML = `<span class="ok">  ✓ index linked</span>`;
+    }
+
+    let d;
+    try {
+      d = await termApi(`/api/tree?path=${encodeURIComponent(rel || '.')}&depth=${depth}`);
+    } catch (err) {
+      termLine(`tree: ${escapeHtml(String(err.message || err))}`, 'err');
+      return;
+    }
+    if (d.root) termRootPath = d.root;
+
+    const st = d.stats || {};
+    const started = performance.now();
+    const baseName = String(d.path === '.' ? (d.root || '').split(/[\\/]/).pop() : d.path.split('/').pop());
+
+    /* 先把整棵树拍平成行，再做"生长"动画 */
+    const lines = [];
+    let biggest = { name: '', size: 0 };
+    let cut = false;
+    const LIMIT = 240;
+
+    (function flatten(nodes, prefix, trail) {
+      nodes.forEach((n, i) => {
+        if (lines.length >= LIMIT) { cut = true; return; }
+        const last = i === nodes.length - 1;
+        const branch = last ? '└── ' : '├── ';
+        const nextPrefix = prefix + (last ? '    ' : '│   ');
+        if (n.type === 'dir') {
+          const kids = n.children || [];
+          const tail = n.skipped ? 'skipped' : (!n.expanded ? '…' : (kids.length ? `${kids.length} item${kids.length > 1 ? 's' : ''}` : 'empty'));
+          lines.push(`<span class="dim">${prefix}${branch}</span><span class="blue">${escapeHtml(n.name)}/</span> <span class="dim">${escapeHtml(tail)}</span>`);
+          if (kids.length) flatten(kids, nextPrefix, trail.concat(n.name));
+        } else {
+          const size = n.size || 0;
+          if (size > biggest.size) biggest = { name: trail.concat(n.name).join('/'), size };
+          lines.push(`<span class="dim">${prefix}${branch}</span><span class="white">${escapeHtml(n.name)}</span><span class="dim">  ${escapeHtml(termFormatBytes(size))}</span>`);
+        }
+      });
+    })(d.tree || [], '', []);
+
+    if (fast) {
+      termLine(`<span class="ok">SKYNET · WORKSPACE TREE</span> <span class="dim">${escapeHtml(termAbsPath(rel))} · depth ${depth}</span>`);
+      termLine(`<span class="blue">${escapeHtml(baseName)}/</span>`);
+      lines.forEach(line => termLine(line));
+      termLine(`<span class="dim">${st.dirs || 0} dirs · ${st.files || 0} files · ${escapeHtml(termFormatBytes(st.bytes || 0))}${st.truncated ? ' · truncated' : ''}</span>`);
+      return;
+    }
+
+    termLine(`<span class="dim">  TARGET </span><span class="white">${escapeHtml(termAbsPath(rel))}</span>`);
+    termLine(`<span class="dim">  DEPTH  </span><span class="white">${depth}</span><span class="dim">   NODES </span><span class="white">${lines.length}</span><span class="dim">   SIZE </span><span class="white">${escapeHtml(termFormatBytes(st.bytes || 0))}</span>`);
+    termLine('');
+
+    const status = termLiveLine('');
+    termLine(`<span class="blue">${escapeHtml(baseName)}/</span>`);
+
+    const perLine = lines.length > 120 ? 6 : lines.length > 60 ? 14 : 26;
+    let done = 0;
+    for (let i = 0; i < lines.length; i++) {
+      termLine(lines[i]);
+      done += 1;
+      if (status && (i % 3 === 0 || i === lines.length - 1)) {
+        const pct = Math.round(done / lines.length * 100);
+        status.innerHTML = `<span class="ok">  ▸ </span><span class="dim">SCANNING</span> <span class="ok">[${barOf(pct)}]</span> <span class="white">${String(pct).padStart(3, ' ')}%</span> <span class="dim">${done}/${lines.length}</span>`;
+      }
+      await termSleep(perLine);
+    }
+
+    const elapsed = ((performance.now() - started) / 1000).toFixed(2);
+    if (status) {
+      status.innerHTML = `<span class="ok">  ▸ DONE </span><span class="dim">[${barOf(100)}]</span> <span class="white">100%</span> <span class="dim">${lines.length} nodes · ${elapsed}s</span>`;
+    }
+    termLine('');
+    termLine(`<span class="dim">  ${st.dirs || 0} directories · ${st.files || 0} files · ${escapeHtml(termFormatBytes(st.bytes || 0))}${st.truncated ? ' · tree truncated on server' : ''}</span>`);
+    if (cut) termLine(`<span class="warn">  output truncated · narrow with: tree ${escapeHtml(parts[0] || '.')} ${Math.max(1, depth - 1)}</span>`);
+    if (biggest.name) termLine(`<span class="dim">  largest </span><span class="white">${escapeHtml(biggest.name)}</span><span class="dim">  ${escapeHtml(termFormatBytes(biggest.size))}</span>`);
+    termLine(`<span class="ok">${rule('╔', '╗', '═')}</span>`);
+    termLine(`<span class="ok">${pad(`SCAN COMPLETE · ${st.files || 0} FILES · ${termFormatBytes(st.bytes || 0)}`)}</span>`);
+    termLine(`<span class="ok">${rule('╚', '╝', '═')}</span>`);
+  }
+
+  async function termCd(target) {
+    if (location.protocol === 'file:') { termLine('cd: local service required · run start.bat', 'warn'); return; }
+    const rel = termResolvePath(target || '~');
+    try {
+      const j = await termApi(`/api/files?path=${encodeURIComponent(rel || '.')}`);
+      if (j.root) termRootPath = j.root;
+      termCwd = (j.path === '.' || j.path === '') ? '' : j.path;
+      termSyncPrompt();
+    } catch (err) {
+      termLine(`cd: ${escapeHtml(String(err.message || err))}`, 'err');
+    }
+  }
+
+  async function termDir(target) {
+    if (location.protocol === 'file:') { termLine('dir: local service required · run start.bat', 'warn'); return; }
+    const rel = termResolvePath(target || '.');
+    try {
+      const j = await termApi(`/api/files?path=${encodeURIComponent(rel || '.')}`);
+      if (j.root) termRootPath = j.root;
+      const entries = j.entries || [];
+      const driveMatch = termRootPath.match(/^([A-Za-z]):/);
+      const drive = driveMatch ? driveMatch[1] : 'C';
+      termLine(`<span class="dim"> Volume in drive ${escapeHtml(drive)} has no label</span>`);
+      termLine(`<span class="dim"> Directory of ${escapeHtml(termAbsPath(rel))}</span>`);
+      termLine('');
+      entries.forEach(f => {
+        const d = f.mtime ? new Date(f.mtime) : null;
+        const pad = n => String(n).padStart(2, '0');
+        const stamp = d
+          ? `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}  ${pad(d.getHours())}:${pad(d.getMinutes())}`
+          : '                ';
+        if (f.type === 'dir') {
+          termLine(`<span class="dim">${stamp}</span>    <span class="blue">${'<DIR>'.padEnd(12, ' ')}</span><span class="blue">${escapeHtml(f.name)}</span>`);
+        } else {
+          const size = String(f.size).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+          termLine(`<span class="dim">${stamp}</span>    <span class="dim">${size.padStart(12, ' ')}</span>  <span class="white">${escapeHtml(f.name)}</span>`);
+        }
+      });
+      const files = entries.filter(e => e.type === 'file');
+      const dirs = entries.filter(e => e.type === 'dir');
+      const total = files.reduce((a, b) => a + (b.size || 0), 0);
+      termLine('');
+      termLine(`<span class="dim">${String(files.length).padStart(14, ' ')} File(s) ${String(total).replace(/\B(?=(\d{3})+(?!\d))/g, ',').padStart(14, ' ')} bytes</span>`);
+      termLine(`<span class="dim">${String(dirs.length).padStart(14, ' ')} Dir(s)</span>`);
+    } catch (err) {
+      termLine(`dir: ${escapeHtml(String(err.message || err))}`, 'err');
+    }
+  }
+
+  async function termType(target) {    if (!target) { termLine('type: missing file name', 'warn'); return; }
+    if (location.protocol === 'file:') { termLine('type: local service required · run start.bat', 'warn'); return; }
+    const rel = termResolvePath(target);
+    try {
+      const j = await termApi(`/api/file?path=${encodeURIComponent(rel)}`);
+      String(j.content || '').split(/\r?\n/).slice(0, 120).forEach(line => termLine(escapeHtml(line)));
+    } catch (err) {
+      termLine(`type: ${escapeHtml(String(err.message || err))}`, 'err');
+    }
   }
 
   function termBoot() {
@@ -3251,11 +3734,12 @@
 
   async function termCat(path) {
     if (location.protocol === 'file:') {
-      termLine('cat: file access requires the local service. Run start.bat.', 'warn');
+      termLine('cat: local service required · run start.bat', 'warn');
       return;
     }
+    const rel = termResolvePath(path);
     try {
-      const r = await fetch(`/api/file?path=${encodeURIComponent(path)}`, { cache: 'no-store' });
+      const r = await fetch(`/api/file?path=${encodeURIComponent(rel)}`, { cache: 'no-store' });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || 'read failed');
       const lines = String(j.content || '').split(/\r?\n/).slice(0, 90);
@@ -3300,18 +3784,27 @@
       ['focus <n>', 'open map at event'],
       ['earth / map / net', 'switch system mode'],
       ['refresh', 'refresh realtime feeds'],
-      ['sys / neofetch', 'system telemetry'],
+      ['sys / systeminfo', 'system telemetry'],
       ['ls [path] / cat <file>', 'browse workspace'],
+      ['cd <dir> / dir [path]', 'cmd-style navigation'],
+      ['type <file>', 'print file (cmd style)'],
+      ['tree [path] [depth]', 'animated workspace scan · add --fast'],
+      ['cartoon', '60s terminal animation · any key stops'],
+      ['python [code]', 'run python 3 (tools/python) · bare = REPL'],
+      ['cls / echo / pwd', 'screen + shell helpers'],
+      ['ipconfig', 'real adapter addresses + link rate'],
+      ['ver', 'real Windows version / build'],
+      ['tasklist', 'real process list'],
+      ['netstat', 'real listening sockets'],
       ['ping <host>', 'real ICMP / TCP latency'],
       ['probe', 'local network probe status'],
       ['ops / tools', 'real security command deck'],
       ['recon / nmap / web / audit', 'real local reconnaissance'],
       ['vuln', 'real evidence-based findings'],
       ['searchsploit <q>', 'real NVD + CISA KEV lookup'],
-      ['msf', 'real native scanner console'],
-      ['msfconsole [url]', 'real msf binary · http_version'],
-      ['lab', 'tool readiness + target state'],
-      ['hydra [url] [user] [wf]', 'real wordlist attack · 需字典文件'],
+      ['msf', 'native scanner console'],
+      ['lab', 'tool readiness'],
+      ['toolkit', 'all tools in tools/ + PATH'],
       ['sqlmap [url]', 'real injection scan · 必须带参数'],
       ['payload <text>', 'real encoder + SHA-256'],
       ['scope / target / report', 'lab scope + real report'],
@@ -3410,15 +3903,14 @@
       ['vuln', 'evidence-based findings · REAL'],
       ['searchsploit <q>', 'NVD 2.0 + CISA KEV · REAL'],
       ['msf', 'native scanner console · REAL'],
-      ['lab', 'tool readiness + target state'],
-      ['hydra [url] [user] [wf]', 'real wordlist attack · REAL'],
+      ['lab', 'tool readiness'],
       ['sqlmap [url]', 'real injection scan · REAL'],
       ['payload <text>', 'real encoder + SHA-256 · REAL'],
       ['scope / target', 'loopback-only scope'],
       ['report', 'download real Markdown report']
     ];
     rows.forEach(([c, d, t]) => termLine(`<span class="white">${c.padEnd(20, ' ')}</span><span class="dim">${d.padEnd(38, ' ')}</span><span class="ok">[${t || 'REAL'}]</span>`));
-    termLine('<span class="dim">主动探测只允许回环地址 · 攻击目标取自 靶机限制/lab-targets.json（默认 127.0.0.1:8793）</span>');
+    termLine('<span class="dim">主动探测只允许回环地址 · sqlmap 目标由终端显式给出</span>');
   }
 
   async function termOpsRecon() {
@@ -3476,6 +3968,14 @@
 
   async function termOpsNmap(arg) {
     const value = String(arg || '').trim();
+    const parts = value.split(/\s+/).filter(Boolean);
+    const first = parts[0] || '';
+    /* 形如 10.0.0.5 / host.example.com 时走真实 nmap；纯端口列表走本机 connect 扫描 */
+    const looksLikeHost = first && !/^\d{1,5}(?:[,\-]\d{1,5})*$/.test(first) && /^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(first);
+    if (looksLikeHost) {
+      await termNmapReal(first, parts[1] || '');
+      return;
+    }
     let ports = '';
     if (value) {
       if (/^\d{1,5}(?:[,-]\d{1,5})*$/.test(value)) ports = value;
@@ -3500,6 +4000,40 @@
     } catch (err) {
       termLine(`<span class="err">[!] 扫描失败：</span> ${escapeHtml(String(err.message || err))}`);
     }
+  }
+
+  async function termNmapReal(host, ports) {
+    termLine(`<span class="dim">[*] nmap ${escapeHtml(host)}${ports ? ` · ports ${escapeHtml(ports)}` : ''} · REAL</span>`);
+    const qs = `?host=${encodeURIComponent(host)}${ports ? `&ports=${encodeURIComponent(ports)}` : ''}`;
+    let d;
+    try {
+      d = await termApi(`/api/lab/nmap${qs}`);
+    } catch (err) {
+      termLine(`<span class="err">nmap: ${escapeHtml(String(err.message || err))}</span>`);
+      return;
+    }
+    if (!d.command) { termToolUnavailable(d, 'nmap'); return; }
+    termLine(`<span class="white">$ ${escapeHtml(d.command)}</span>`);
+    termToolOutput(`${d.stdout || ''}\n${d.stderr || ''}`, 50);
+    termLine(`<span class="${d.ok ? 'ok' : 'warn'}">[${d.ok ? '+' : '!'}]</span> exit ${d.exitCode} · ${d.durationMs}ms`);
+    termOpsEvidence.nmap = d;
+  }
+
+  async function termToolkit() {
+    let d;
+    try {
+      d = await termApi('/api/lab/toolkit');
+    } catch (err) {
+      termLine(`toolkit: ${escapeHtml(String(err.message || err))}`, 'err');
+      return;
+    }
+    termLine(`<span class="ok">TOOLKIT</span> <span class="dim">${d.installed}/${d.total} available · tools/ 优先，其次 PATH</span>`);
+    (d.tools || []).forEach(t => {
+      const mark = t.available ? '<span class="ok">[+]</span>' : '<span class="dim">[-]</span>';
+      const detail = t.available ? `${t.via} · ${t.path}` : t.hint;
+      termLine(`${mark} <span class="white">${escapeHtml(String(t.name).padEnd(18, ' '))}</span><span class="dim">${escapeHtml(detail)}</span>`);
+    });
+    termLine('<span class="dim">[i] 已接入命令：sqlmap / nmap <host> [ports]；其余工具装进 tools/ 后可继续接</span>');
   }
 
   async function termOpsWeb() {
@@ -3747,9 +4281,8 @@
   }
 
   function termToolUnavailable(d, label) {
-    termLine(`<span class="err">[!] ${escapeHtml(label)} 不可用：</span> ${escapeHtml(d.error || 'unknown')}`);
-    if (d.hint) termLine(`<span class="dim">[i] ${escapeHtml(d.hint)}</span>`);
-    termLine('<span class="dim">[i] 不生成替代数据 · 工具装好后这条命令就是真实执行</span>');
+    termLine(`<span class="err">${escapeHtml(label)}: ${escapeHtml(d.error || 'unavailable')}</span>`);
+    if (d.hint) termLine(`<span class="dim">hint: ${escapeHtml(d.hint)}</span>`);
   }
 
   function termToolOutput(text, maxLines = 40) {
@@ -3762,117 +4295,51 @@
             : 'dim';
       termLine(`<span class="${cls}">${escapeHtml(line.slice(0, 200))}</span>`);
     });
-    if (lines.length > shown.length) termLine(`<span class="dim">… 其余 ${lines.length - shown.length} 行省略</span>`);
+    if (lines.length > shown.length) termLine(`<span class="dim">... ${lines.length - shown.length} more lines</span>`);
   }
 
-  async function termOpsHydra(arg) {
-    const tokens = String(arg || '').trim().split(/\s+/).filter(Boolean);
-    if (!tokens.length) {
-      termLine('<span class="warn">[!] 用法：hydra &lt;URL|id&gt; [用户] [字典路径] [表单模板]</span>');
-      termLine('<span class="dim">例：hydra http://host/login admin words.txt</span>');
-      termLine('<span class="dim">表单模板省略时用 /login:user=^USER^&pass=^PASS^:F=invalid</span>');
-      return;
-    }
-    const first = tokens[0];
-    const isUrl = /^https?:\/\//i.test(first);
-    const user = tokens[1] || 'admin';
-    const wordlist = tokens[2] || '';
-    const form = tokens.slice(3).join(' ');
-    const qs = [
-      `user=${encodeURIComponent(user)}`,
-      isUrl ? `url=${encodeURIComponent(first)}` : `target=${encodeURIComponent(first)}`,
-      wordlist ? `wordlist=${encodeURIComponent(wordlist)}` : '',
-      form ? `form=${encodeURIComponent(form)}` : ''
-    ].filter(Boolean).join('&');
-    termLine(`<span class="dim">[*] hydra · 真实字典爆破 · ${escapeHtml(first)} · user ${escapeHtml(user)}</span>`);
-    let d;
-    try {
-      d = await termApi(`/api/lab/attack/hydra?${qs}`);
-    } catch (err) {
-      termLine(`<span class="err">[!] 爆破请求失败：</span> ${escapeHtml(String(err.message || err))}`);
-      return;
-    }
-    if (!d.command) { termToolUnavailable(d, 'hydra'); return; }
-    termLine(`<span class="dim">target ${escapeHtml(d.adhoc ? '临时' : (d.targetId || '--'))} → ${escapeHtml(d.target || '--')}</span>`);
-    termLine(`<span class="white">$ ${escapeHtml(d.command)}</span>`);
-    termToolOutput(`${d.stdout || ''}\n${d.stderr || ''}`);
-    if (d.parsed && d.parsed.success) {
-      termLine(`<span class="ok">[+] HIT</span> ${escapeHtml(d.parsed.user)}:${escapeHtml(d.parsed.password)} · ${d.durationMs}ms · 真实登录成功`);
-      termOpsFindings.push(`[HIGH] 弱口令 ${d.parsed.user}:${d.parsed.password} @ ${d.targetId || 'target'}`);
-      termOpsEvidence.hydra = d;
-    } else {
-      termLine(`<span class="warn">[!] 未命中</span> · ${d.durationMs}ms · ${escapeHtml(d.error || '')}`);
-      termOpsEvidence.hydra = d;
-    }
-  }
 
   async function termOpsSqlmap(arg) {
     const raw = String(arg || '').trim();
     if (!raw) {
-      termLine('<span class="warn">[!] 用法：sqlmap &lt;完整URL&gt;</span> <span class="dim">例如 sqlmap http://host/item?id=1</span>');
-      termLine('<span class="dim">白名单靶机已移除，现在必须显式给出目标</span>');
+      termLine('<span class="warn">sqlmap: missing target</span>');
+      termLine('<span class="dim">usage: sqlmap &lt;url&gt;   e.g. sqlmap http://host/item?id=1</span>');
       return;
     }
     const isUrl = /^https?:\/\//i.test(raw);
     const query = isUrl
       ? `?url=${encodeURIComponent(raw)}`
       : `?target=${encodeURIComponent(raw)}`;
-    termLine(`<span class="dim">[*] sqlmap · 真实注入检测 · ${isUrl ? `临时目标 ${escapeHtml(raw)}` : `target ${escapeHtml(raw)}`}</span>`);
+    termLine(`<span class="dim">[*] sqlmap · ${isUrl ? escapeHtml(raw) : `target ${escapeHtml(raw)}`}</span>`);
     let d;
     try {
       d = await termApi(`/api/lab/attack/sqlmap${query}`);
     } catch (err) {
-      termLine(`<span class="err">[!] sqlmap 请求失败：</span> ${escapeHtml(String(err.message || err))}`);
+      termLine(`<span class="err">sqlmap: ${escapeHtml(String(err.message || err))}</span>`);
       return;
     }
     if (!d.command) { termToolUnavailable(d, 'sqlmap'); return; }
-    termLine(`<span class="dim">target ${escapeHtml(d.adhoc ? '临时' : (d.targetId || '--'))} → ${escapeHtml(d.target || '--')}</span>`);
+    termLine(`<span class="dim">target ${escapeHtml(d.adhoc ? 'adhoc' : (d.targetId || '--'))} -&gt; ${escapeHtml(d.target || '--')}</span>`);
     if (d.note) termLine(`<span class="warn">[!] ${escapeHtml(d.note)}</span>`);
     termLine(`<span class="white">$ ${escapeHtml(d.command)}</span>`);
     termToolOutput(`${d.stdout || ''}\n${d.stderr || ''}`);
     const p = d.parsed || {};
     if (p.vulnerable) {
-      termLine(`<span class="ok">[+] 注入点</span> ${escapeHtml(p.parameter || '--')} · DBMS ${escapeHtml(p.dbms || '--')}`);
+      termLine(`<span class="ok">[+] injectable</span> <span class="dim">param</span> ${escapeHtml(p.parameter || '--')} <span class="dim">dbms</span> ${escapeHtml(p.dbms || '--')}`);
       if (p.banner) termLine(`<span class="dim">banner</span> ${escapeHtml(p.banner)}`);
-      termLine(`<span class="dim">user=${escapeHtml(p.currentUser || '--')} · db=${escapeHtml(p.currentDb || '--')} · host=${escapeHtml(p.hostname || '--')}</span>`);
       if ((p.databases || []).length) termLine(`<span class="dim">databases</span> ${escapeHtml(p.databases.join(', '))}`);
       if ((p.tables || []).length) termLine(`<span class="dim">tables</span> ${escapeHtml(p.tables.join(', '))}`);
-      termOpsFindings.push(`[CRITICAL] SQL 注入 ${d.targetId || ''}（${p.parameter || 'id'} · ${p.dbms || 'sqlite'}）`);
+      termOpsFindings.push(`[CRITICAL] SQL injection ${d.targetId || ''} (${p.parameter || 'id'} · ${p.dbms || 'sqlite'})`);
     } else {
-      termLine(`<span class="warn">[!] 未确认注入</span> · exit ${d.exitCode} · ${escapeHtml(d.error || '')}`);
+      termLine(`<span class="warn">[-] not injectable</span> <span class="dim">exit ${d.exitCode} · ${escapeHtml(d.error || '')}</span>`);
     }
     termOpsEvidence.sqlmap = d;
-    termLine('<span class="dim">[i] --batch --level=1 --risk=1 · 无后渗透、无文件写入</span>');
-  }
-
-  async function termOpsMsfReal(arg) {
-    const raw = String(arg || '').trim();
-    if (!raw) {
-      termLine('<span class="warn">[!] 用法：msfconsole &lt;URL|id&gt;</span> <span class="dim">例：msfconsole http://host:8080/</span>');
-      return;
-    }
-    const isUrl = /^https?:\/\//i.test(raw);
-    const query = isUrl ? `?url=${encodeURIComponent(raw)}` : `?target=${encodeURIComponent(raw)}`;
-    termLine(`<span class="dim">[*] msfconsole · auxiliary/scanner/http/http_version · ${escapeHtml(raw)}</span>`);
-    let d;
-    try {
-      d = await termApi(`/api/lab/attack/msf${query}`);
-    } catch (err) {
-      termLine(`<span class="err">[!] msf 请求失败：</span> ${escapeHtml(String(err.message || err))}`);
-      return;
-    }
-    if (!d.command) { termToolUnavailable(d, 'msfconsole'); return; }
-    termLine(`<span class="dim">target ${escapeHtml(d.targetId || '--')} → ${escapeHtml(d.target || '--')}</span>`);
-    termLine(`<span class="white">$ ${escapeHtml(d.command)}</span>`);
-    termToolOutput(`${d.stdout || ''}\n${d.stderr || ''}`);
-    termLine(`<span class="${d.ok ? 'ok' : 'warn'}">[${d.ok ? '+' : '!'}]</span> exit ${d.exitCode} · ${d.durationMs}ms`);
-    termOpsEvidence.msf = d;
   }
 
 
   async function termOpsPayload(text) {
     const value = String(text == null ? '' : text).slice(0, 2048);
-    if (!value) { termLine('usage: payload <text> · 真实编码 + 摘要', 'warn'); return; }
+    if (!value) { termLine('usage: payload <text>', 'warn'); return; }
     const bytes = new TextEncoder().encode(value);
     let binary = '';
     bytes.forEach(b => { binary += String.fromCharCode(b); });
@@ -3898,11 +4365,11 @@
     termLine(`<span class="ok">base64</span>   <span class="white">${escapeHtml(base64)}</span>`);
     termLine(`<span class="ok">url</span>      <span class="white">${escapeHtml(encodeURIComponent(value))}</span>`);
     termLine(`<span class="ok">hex</span>      <span class="dim">${escapeHtml(hex)}</span>`);
-    termLine('<span class="dim">真实编码结果 · 不含 shellcode / 反弹 shell</span>');
+    termLine('<span class="dim">encoding only · no shellcode / reverse shell</span>');
   }
 
   async function termOpsLab() {
-    termLine('<span class="dim">[*] LAB 靶机 + 真实工具状态 · /api/lab/target · /api/lab/attack/tools</span>');
+    termLine('<span class="dim">[*] skynet lab · tool readiness</span>');
     let target = null;
     let tools = null;
     try {
@@ -3910,37 +4377,32 @@
       target = pair[0];
       tools = pair[1];
     } catch (err) {
-      termLine(`<span class="err">[!] LAB 状态读取失败：</span> ${escapeHtml(String(err.message || err))}`);
+      termLine(`<span class="err">lab: ${escapeHtml(String(err.message || err))}</span>`);
       return;
     }
     const builtin = target || (tools && tools.labTarget) || null;
     const removed = !!(builtin && builtin.removed);
     const up = !!(builtin && builtin.running);
     if (removed) {
-      termLine('<span class="warn">[!] 内置靶机</span> <span class="dim">已移除（靶机限制/ 目录不存在）· 直接用 sqlmap &lt;URL&gt; 指定目标</span>');
+      termLine('<span class="warn">[!] lab target: removed</span>');
     } else {
-      termLine(`<span class="${up ? 'ok' : 'err'}">[${up ? '+' : '!'}] 内置靶机</span> ${escapeHtml((builtin && builtin.host) || '--')}:${(builtin && builtin.port) || '--'} · ${up ? `up ${builtin.uptimeSeconds}s · 登录成功 ${builtin.logins} / 尝试 ${builtin.loginAttempts}` : '未运行'}`);
-      termLine(`<span class="dim">banner ${escapeHtml((builtin && builtin.banner) || '--')} · 内存 SQLite · 仅回环</span>`);
+      termLine(`<span class="${up ? 'ok' : 'err'}">[${up ? '+' : '-'}] lab target</span> <span class="dim">${escapeHtml((builtin && builtin.host) || '--')}:${(builtin && builtin.port) || '--'} · ${up ? `up ${builtin.uptimeSeconds}s` : 'down'}</span>`);
     }
     const targets = (tools && tools.targets) || [];
-    if (targets.length) {
-      termLine(`<span class="dim">靶机限制/lab-targets.json · ${targets.length} 个目标</span>`);
-      targets.forEach(item => {
-        termLine(`  <span class="ok">${escapeHtml(item.id.padEnd(10, ' '))}</span><span class="white">${escapeHtml(item.label)}</span> <span class="dim">${escapeHtml(item.sqlmapUrl)}</span>`);
-      });
-    }
+    targets.forEach(item => {
+      termLine(`  <span class="ok">${escapeHtml(String(item.id).padEnd(10, ' '))}</span><span class="white">${escapeHtml(item.label)}</span> <span class="dim">${escapeHtml(item.sqlmapUrl)}</span>`);
+    });
     if (tools && tools.targetError) termLine(`<span class="warn">[!] ${escapeHtml(tools.targetError)}</span>`);
     if (tools && tools.remoteTargetMode) {
-      termLine(`<span class="dim">远程填目标：${tools.remoteTargetMode === 'local' ? '仅本机（SKYNET_REMOTE_TARGETS=local）' : '允许局域网任何登录用户'}</span>`);
+      termLine(`<span class="dim">remote targets: ${tools.remoteTargetMode === 'local' ? 'local only' : 'any authenticated user on the LAN'}</span>`);
     }
     const t = (tools && tools.tools) || {};
-    [['sqlmap', t.sqlmap], ['hydra', t.hydra], ['msfconsole', t.msfconsole]].forEach(([name, info]) => {
+    [['sqlmap', t.sqlmap]].forEach(([name, info]) => {
       const on = !!(info && info.available);
       const detail = on ? (info.via || 'ready') : (info.hint || info.error || 'not installed');
       termLine(`<span class="${on ? 'ok' : 'warn'}">[${on ? '+' : '-'}]</span> <span class="white">${name.padEnd(12)}</span><span class="dim">${escapeHtml(detail)}</span>`);
     });
-    termLine('<span class="dim">用法 sqlmap &lt;完整URL&gt; · hydra / msfconsole 需要 lab-targets.json 里的 id</span>');
-    termLine('<span class="dim">[i] 走真实进程；缺失时如实报错，绝不返回假结果</span>');
+    termLine('<span class="dim">usage: sqlmap &lt;url&gt; · put more binaries in tools/ to enable them</span>');
   }
 
   function termOpsScope() {
@@ -4081,13 +4543,15 @@
 
   async function termLs(path = '.') {
     if (location.protocol === 'file:') {
-      termLine('ls: 文件浏览需要本机服务 · 用 start.bat 启动', 'warn');
+      termLine('ls: local service required · run start.bat', 'warn');
       return;
     }
+    const rel = termResolvePath(path || '.');
     try {
-      const r = await fetch(`/api/files?path=${encodeURIComponent(path)}`, { cache: 'no-store' });
+      const r = await fetch(`/api/files?path=${encodeURIComponent(rel || '.')}`, { cache: 'no-store' });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || 'failed');
+      if (j.root) termRootPath = j.root;
       const entries = j.entries || [];
       termLine(`<span class="dim">total ${entries.length} · ${escapeHtml(j.path)}</span>`);
       entries.forEach(f => {
@@ -4110,6 +4574,18 @@
     const cmd = parts.shift().toLowerCase();
     const arg = parts.join(' ');
     const s = termSys || termFallbackSys();
+
+    /* python 交互模式：整行当作代码执行，exit() 回 shell */
+    if (termPyMode) {
+      if (/^(exit|quit)(\(\))?$/i.test(input)) {
+        termPyMode = false;
+        termSyncPrompt();
+        termLine('<span class="dim">leaving python</span>');
+        return;
+      }
+      await termPythonExec(input);
+      return;
+    }
 
     switch (cmd) {
       case 'help':
@@ -4191,14 +4667,12 @@
       case 'msf':
         await termOpsMsf(arg);
         break;
-      case 'msfconsole':
-        await termOpsMsfReal(arg);
-        break;
       case 'lab':
         await termOpsLab();
         break;
-      case 'hydra':
-        await termOpsHydra(arg);
+      case 'toolkit':
+      case 'which':
+        await termToolkit();
         break;
       case 'sqlmap':
       case 'sqli':
@@ -4222,11 +4696,41 @@
       case 'sys':
         termSysInfo(false);
         break;
-      case 'neofetch':
+      case 'systeminfo':
         termSysInfo(true);
         break;
       case 'ls':
         termLs(arg || '.');
+        break;
+      case 'cd':
+      case 'chdir':
+        await termCd(arg);
+        break;
+      case 'dir':
+        await termDir(arg);
+        break;
+      case 'tree':
+        await termTree(arg);
+        break;
+      case 'cartoon':
+        termCartoon();
+        break;
+      case 'python':
+      case 'py':
+        await termPython(arg);
+        break;
+      case 'type':
+        await termType(arg);
+        break;
+      case 'cls':
+      case 'clr':
+        if (termOut) termOut.innerHTML = '';
+        break;
+      case 'echo':
+        termLine(escapeHtml(arg || ''));
+        break;
+      case 'pwd':
+        termLine(escapeHtml(termAbsPath(termCwd)));
         break;
       case 'cat':
         if (!arg) termLine('usage: cat <file>', 'warn');
@@ -4278,39 +4782,68 @@
           termLine(`up ${termFormatUptime(s.uptime)} · ${events.length} events`);
         }
         break;
-      case 'uname':
+      case 'ver':
         try {
           const f = await termFactsGet();
-          termLine(`${escapeHtml(f.os.type || f.os.platform)} ${escapeHtml(f.os.release)} ${escapeHtml(f.os.arch)} · node ${escapeHtml(f.os.node)}`);
+          termLine('');
+          termLine(`Microsoft Windows [Version ${escapeHtml(f.os.caption || f.os.release || '--')}]`);
+          termLine(`build ${escapeHtml(f.os.build || '--')} · ${escapeHtml(f.os.arch || '--')} · node ${escapeHtml(f.os.node || '--')}`);
+          termLine('');
         } catch (err) {
-          termLine(`${escapeHtml(s.platform || '--')} ${escapeHtml(s.release || '')} ${escapeHtml(s.arch || '')}`);
+          termLine(`ver: ${escapeHtml(String(err.message || err))}`, 'err');
         }
         break;
-      case 'ifconfig': {
-        if (location.protocol === 'file:') { termLine('ifconfig: 需要本机服务 · 用 start.bat 启动', 'warn'); break; }
+      case 'ipconfig': {
+        if (location.protocol === 'file:') { termLine('ipconfig: local service required · run start.bat', 'warn'); break; }
         try {
           const f = await termFactsGet();
           (f.nic || []).forEach(nic => {
+            termLine('');
+            termLine(`<span class="white">${escapeHtml(nic.name)}</span>`);
             (nic.addresses || []).forEach(a => {
               const stat = ((probeLast && probeLast.adapters) || []).find(x => x.name === nic.name) || null;
-              const rate = stat ? ` · ↓ ${((stat.rxBps || 0) * 8 / 1e6).toFixed(2)} / ↑ ${((stat.txBps || 0) * 8 / 1e6).toFixed(2)} Mbps` : '';
-              termLine(`${escapeHtml(nic.name)} · ${escapeHtml(a.address)} · ${escapeHtml(a.mac || '--')}${a.internal ? ' · internal' : ''}${rate}`);
+              const rate = stat ? ` · down ${((stat.rxBps || 0) * 8 / 1e6).toFixed(2)} / up ${((stat.txBps || 0) * 8 / 1e6).toFixed(2)} Mbps` : '';
+              termLine(`  IPv4 Address. . . . . . . . . . . : ${escapeHtml(a.address)}${a.internal ? ' (loopback)' : ''}`);
+              if (a.mac) termLine(`  Physical Address. . . . . . . . . : ${escapeHtml(a.mac)}${rate}`);
             });
           });
-          if (!(f.nic || []).length) termLine('ifconfig: 未读取到网卡', 'warn');
+          if (!(f.nic || []).length) termLine('ipconfig: no adapter reported', 'warn');
         } catch (err) {
-          termLine(`ifconfig: ${escapeHtml(String(err.message || err))}`, 'err');
+          termLine(`ipconfig: ${escapeHtml(String(err.message || err))}`, 'err');
+        }
+        break;
+      }
+      case 'tasklist': {
+        if (location.protocol === 'file:') { termLine('tasklist: local service required · run start.bat', 'warn'); break; }
+        try {
+          const d = await termApi('/api/lab/procs');
+          termLine('<span class="dim">Image Name                     PID     Mem Usage</span>');
+          (d.processes || []).slice(0, 15).forEach(p => {
+            termLine(`${escapeHtml(String(p.name || '--').padEnd(28, ' '))} ${String(p.pid || 0).padStart(7, ' ')}  ${escapeHtml(termFormatBytes(p.mem || 0))}`);
+          });
+          termLine(`<span class="dim">${(d.processes || []).length} processes listed (top by memory)</span>`);
+        } catch (err) {
+          termLine(`tasklist: ${escapeHtml(String(err.message || err))}`, 'err');
+        }
+        break;
+      }
+      case 'netstat': {
+        if (location.protocol === 'file:') { termLine('netstat: local service required · run start.bat', 'warn'); break; }
+        try {
+          const d = await termApi('/api/audit');
+          const rows = (d.listening || []).slice(0, 25);
+          termLine('<span class="dim">  Proto  Local Address          PID   Process</span>');
+          rows.forEach(r => {
+            termLine(`  ${escapeHtml(String(r.Protocol || 'TCP').padEnd(6, ' '))} ${escapeHtml(`${r.LocalAddress}:${r.LocalPort}`.padEnd(22, ' '))} ${String(r.OwningProcess || 0).padStart(5, ' ')}  ${escapeHtml(r.ProcessName || '--')}`);
+          });
+          termLine(`<span class="dim">${(d.listening || []).length} listening sockets</span>`);
+        } catch (err) {
+          termLine(`netstat: ${escapeHtml(String(err.message || err))}`, 'err');
         }
         break;
       }
       case 'exit':
         setAppMode('earth');
-        break;
-      case 'sudo':
-        termLine('[sudo] 本终端不提供提权 · 没有密码提示，也没有执行任何命令', 'warn');
-        break;
-      case 'rm':
-        termLine('rm: 本终端为只读界面 · 未删除任何文件', 'warn');
         break;
       default:
         termLine(`command not found: ${escapeHtml(cmd)} · type <span class="ok">help</span>`, 'err');
@@ -4329,6 +4862,13 @@
     termInput = document.getElementById('termInput');
     termFilesEl = document.getElementById('termFiles');
     termEventsEl = document.getElementById('termEvents');
+    termSyncPrompt();
+    setTimeout(() => {
+      fetch('/api/files?path=.', { cache: 'no-store' })
+        .then(r => r.json())
+        .then(j => { if (j && j.root) termRootPath = j.root; })
+        .catch(() => { /* ignore */ });
+    }, 600);
 
     document.getElementById('termWindow').addEventListener('click', focusTermWindow);
 

@@ -310,7 +310,8 @@ function serveStatic(req, res, pathname) {
       return;
     }
     const ext = path.extname(real).toLowerCase();
-    const noStore = isHtml || base === 'login.css' || base === 'login.js';
+    /* JS / CSS / HTML 不缓存：改完刷新即可生效，避免拿到旧的 app.js */
+    const noStore = isHtml || /\.(?:js|css)$/i.test(base);
     res.writeHead(200, {
       'Content-Type': MIME[ext] || 'application/octet-stream',
       'Cache-Control': noStore ? 'no-store' : 'public, max-age=60',
@@ -542,17 +543,83 @@ function listDirectory(rel) {
     .map(d => {
       const full = path.join(dir, d.name);
       let size = 0;
-      try { size = fs.statSync(full).size; } catch (e) { /* ignore */ }
+      let mtime = 0;
+      try {
+        const st = fs.statSync(full);
+        size = st.size;
+        mtime = st.mtimeMs;
+      } catch (e) { /* ignore */ }
       return {
         name: d.name,
         path: path.relative(ROOT, full).replace(/\\/g, '/'),
         type: d.isDirectory() ? 'dir' : 'file',
-        size
+        size,
+        mtime
       };
     })
     .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
 
-  return { path: path.relative(ROOT, dir).replace(/\\/g, '/') || '.', entries };
+  return { path: path.relative(ROOT, dir).replace(/\\/g, '/') || '.', root: ROOT, entries };
+}
+
+/* 目录树：一次请求走完整个子树，浏览器不用逐层往返。
+   设节点上限，避免 node_modules / .git 这类目录把响应撑爆。 */
+const TREE_SKIP = new Set(['node_modules', '.git', '__pycache__', '.cache', '_dl']);
+const TREE_MAX_NODES = 800;
+
+function walkTree(rel, maxDepth) {
+  const start = safePath(rel || '.');
+  if (!start) return { error: 'forbidden', code: 403 };
+  let stat;
+  try { stat = fs.statSync(start); } catch (e) { return { error: 'not found', code: 404 }; }
+  if (!stat.isDirectory()) return { error: 'not a directory', code: 400 };
+
+  const stats = { dirs: 0, files: 0, bytes: 0, nodes: 0, truncated: false };
+
+  function walk(dirAbs, depth) {
+    let entries = [];
+    try { entries = fs.readdirSync(dirAbs, { withFileTypes: true }); } catch (e) { return []; }
+    entries.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    const out = [];
+    for (const entry of entries) {
+      if (stats.nodes >= TREE_MAX_NODES) { stats.truncated = true; break; }
+      const full = path.join(dirAbs, entry.name);
+      if (entry.isDirectory()) {
+        stats.nodes += 1;
+        if (TREE_SKIP.has(entry.name) || entry.name.startsWith('.')) {
+          out.push({ name: entry.name, type: 'dir', skipped: true, expanded: false, children: [] });
+          continue;
+        }
+        stats.dirs += 1;
+        const expanded = depth < maxDepth;
+        const children = expanded ? walk(full, depth + 1) : [];
+        out.push({ name: entry.name, type: 'dir', skipped: false, expanded, children });
+      } else {
+        stats.nodes += 1;
+        stats.files += 1;
+        let size = 0;
+        try { size = fs.statSync(full).size; } catch (e) { /* ignore */ }
+        stats.bytes += size;
+        out.push({ name: entry.name, type: 'file', size });
+      }
+    }
+    return out;
+  }
+
+  const tree = walk(start, 1);
+  return {
+    ok: true,
+    real: true,
+    path: path.relative(ROOT, start).replace(/\\/g, '/') || '.',
+    root: ROOT,
+    maxDepth,
+    tree,
+    stats
+  };
 }
 
 function readTextFile(rel) {
@@ -1054,6 +1121,16 @@ async function handleLabApi(req, res, url) {
       sendJSON(res, 200, data);
       return;
     }
+    case 'toolkit': {
+      sendJSON(res, 200, await lab.toolkitStatus());
+      return;
+    }
+    case 'nmap': {
+      const host = url.searchParams.get('host') || '';
+      if (rejectRemoteAdhoc(req, res, 'nmap', host)) return;
+      sendJSON(res, 200, await lab.nmapRun(host, url.searchParams.get('ports') || ''));
+      return;
+    }
     case 'attack/sqlmap': {
       const adhocUrl = url.searchParams.get('url') || '';
       if (rejectRemoteAdhoc(req, res, 'sqlmap', adhocUrl)) return;
@@ -1273,8 +1350,37 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  /* Python 执行：默认只允许本机来源；设 SKYNET_PYTHON_REMOTE=1 才放开局域网 */
+  if (url.pathname === '/api/python' && req.method === 'POST') {
+    const allowRemote = String(process.env.SKYNET_PYTHON_REMOTE || '') === '1';
+    if (!allowRemote && !loopbackOrSelfClient(req)) {
+      console.warn(`[python] 拒绝远程执行 · 来源 ${clientIp(req)}`);
+      sendJSON(res, 403, { ok: false, real: true, error: 'python 执行只允许本机来源（设 SKYNET_PYTHON_REMOTE=1 可放开）' });
+      return;
+    }
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      sendJSON(res, 400, { ok: false, error: 'invalid json' });
+      return;
+    }
+    const out = await lab.runPython(body && body.code);
+    if (!out.ok && out.stderr) console.warn(`[python] exit ${out.exitCode} · ${String(body.code).slice(0, 120)}`);
+    sendJSON(res, 200, out);
+    return;
+  }
+
   if (url.pathname === '/api/file') {
     const result = readTextFile(url.searchParams.get('path') || '');
+    if (result.error) sendJSON(res, result.code || 400, { error: result.error });
+    else sendJSON(res, 200, result);
+    return;
+  }
+
+  if (url.pathname === '/api/tree') {
+    const depth = Math.max(1, Math.min(8, Number(url.searchParams.get('depth')) || 3));
+    const result = walkTree(url.searchParams.get('path') || '.', depth);
     if (result.error) sendJSON(res, result.code || 400, { error: result.error });
     else sendJSON(res, 200, result);
     return;
