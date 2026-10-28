@@ -25,6 +25,10 @@ if not errorlevel 1 (
 )
 
 echo   Starting service ...
+if exist "%~dp0local.credentials.bat" (
+  call "%~dp0local.credentials.bat"
+  echo   Using local credentials override.
+)
 start "SKYNET-SERVER" /b node server.js
 timeout /t 2 /nobreak >nul
 netstat -ano | findstr /C:":8792 " | findstr /C:"LISTENING" >nul 2>nul
