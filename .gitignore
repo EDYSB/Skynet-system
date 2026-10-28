@@ -20,3 +20,6 @@ tools/sqlmap/
 tools/_dl/
 tools/sqlmap-output/
 tools/install-log.txt
+
+# 本机专用启动脚本（含本地凭据，不入库）
+start.local.bat
