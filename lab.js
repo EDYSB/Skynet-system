@@ -19,7 +19,12 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
-const labTarget = require('./lab-target');
+let labTarget = null;
+try {
+  labTarget = require('./靶机限制/lab-target');
+} catch (err) {
+  labTarget = null;
+}
 
 const LOOPBACK = '127.0.0.1';
 const IS_WIN = process.platform === 'win32';
@@ -1296,19 +1301,166 @@ function buildFindings(data) {
    LAB ATTACK · 真实工具执行器
    ------------------------------------------------------------
    约束写在代码里，不写在文档里：
-    - 目标硬编码为 127.0.0.1:8793 的本机靶机，函数不接受 host / port 参数
+    - 白名单靶机已移除（靶机限制/ 目录）；现在只接受终端里直接给的 URL
     - 只调用真实二进制（PATH 或 vendor/），缺失时返回真实错误与安装方式
-    - 不生成反弹 shell、不做持久化、不接触非回环地址
+    - 不生成反弹 shell、不做持久化
 ------------------------------------------------------------ */
 
-const LAB_BASE = `http://${labTarget.TARGET_HOST}:${labTarget.TARGET_PORT}`;
-const LAB_WORDLIST = path.join(__dirname, 'lab-wordlist.txt');
+const TARGETS_FILE = path.join(__dirname, '靶机限制', 'lab-targets.json');
+const LAB_WORDLIST = path.join(__dirname, '靶机限制', 'lab-wordlist.txt');
 const SQLMAP_OUTPUT = path.join(__dirname, 'vendor', 'sqlmap-output');
 const SQLMAP_TIMEOUT = 240000;
 const HYDRA_TIMEOUT = 180000;
 const MSF_TIMEOUT = 180000;
 
-let toolCache = { at: 0, data: null };
+const DEFAULT_HYDRA_FORM = '/login:user=^USER^&pass=^PASS^:F=invalid';
+const LAB_REMOVED = '靶机限制/ 已移除 · 用 sqlmap <完整URL> 直接指定目标';
+
+/* 白名单靶机已被删除；这里保留兜底结构，供配置恢复后使用 */
+const BUILTIN_TARGET = labTarget
+  ? Object.freeze({
+    id: 'lab',
+    label: '内置靶机',
+    base: `http://${labTarget.TARGET_HOST}:${labTarget.TARGET_PORT}`,
+    host: labTarget.TARGET_HOST,
+    port: labTarget.TARGET_PORT,
+    sqlmapPath: '/item?id=1',
+    loginPath: '/login',
+    hydraPort: labTarget.TARGET_PORT,
+    hydraForm: DEFAULT_HYDRA_FORM
+  })
+  : null;
+
+function validateTarget(raw) {
+  if (!raw || typeof raw !== 'object') throw new Error('target 必须是对象');
+  const id = String(raw.id || '').trim();
+  if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(id)) throw new Error(`target id 非法：${id || '(空)'}`);
+  let url;
+  try {
+    url = new URL(String(raw.base || ''));
+  } catch (err) {
+    throw new Error(`${id}：base 不是合法 URL`);
+  }
+  if (!/^https?:$/.test(url.protocol)) throw new Error(`${id}：base 只支持 http / https`);
+  const sqlmapPath = String(raw.sqlmapPath || '/');
+  if (!sqlmapPath.startsWith('/')) throw new Error(`${id}：sqlmapPath 必须以 / 开头`);
+  const defaultPort = url.port ? Number(url.port) : (url.protocol === 'https:' ? 443 : 80);
+  const hydraPort = Number(raw.hydraPort == null ? defaultPort : raw.hydraPort);
+  if (!Number.isInteger(hydraPort) || hydraPort < 1 || hydraPort > 65535) throw new Error(`${id}：hydraPort 非法`);
+  const hydraForm = String(raw.hydraForm || '');
+  if (hydraForm && (!hydraForm.startsWith('/') || !hydraForm.includes('^USER^') || !hydraForm.includes('^PASS^'))) {
+    throw new Error(`${id}：hydraForm 必须形如 /login:user=^USER^&pass=^PASS^:F=invalid`);
+  }
+  return {
+    id,
+    label: String(raw.label || id),
+    base: `${url.protocol}//${url.host}`,
+    host: url.hostname,
+    port: defaultPort,
+    sqlmapPath,
+    loginPath: String(raw.loginPath || '/login'),
+    hydraPort,
+    hydraForm: hydraForm || DEFAULT_HYDRA_FORM
+  };
+}
+
+let targetsCache = { at: -1, data: null };
+
+function loadTargets() {
+  let stamp = 0;
+  try {
+    stamp = fs.statSync(TARGETS_FILE).mtimeMs;
+  } catch (err) {
+    stamp = 0;
+  }
+  if (targetsCache.data && targetsCache.at === stamp) return targetsCache.data;
+  let error = null;
+  let targets = [];
+  if (!stamp) {
+    error = BUILTIN_TARGET
+      ? '靶机限制/lab-targets.json 不存在 · 已回退到内置靶机'
+      : LAB_REMOVED;
+  } else {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(TARGETS_FILE, 'utf8'));
+      const list = Array.isArray(parsed) ? parsed : (parsed && parsed.targets);
+      if (!Array.isArray(list) || !list.length) throw new Error('targets 必须是非空数组');
+      targets = list.map(validateTarget);
+      const seen = new Set();
+      targets.forEach(item => {
+        if (seen.has(item.id)) throw new Error(`target id 重复：${item.id}`);
+        seen.add(item.id);
+      });
+    } catch (err) {
+      error = `靶机限制/lab-targets.json 无效：${String(err && err.message || err)}${BUILTIN_TARGET ? ' · 已回退到内置靶机' : ' · 无可用目标'}`;
+      targets = [];
+    }
+  }
+  if (!targets.length && BUILTIN_TARGET) targets = [BUILTIN_TARGET];
+  const data = { targets, error };
+  targetsCache = { at: stamp, data };
+  return data;
+}
+
+function getTarget(targetId) {
+  const { targets } = loadTargets();
+  if (!targets.length) return { target: null, error: LAB_REMOVED };
+  const id = String(targetId || '').trim();
+  if (!id) return { target: targets[0], error: null };
+  const found = targets.find(item => item.id === id);
+  if (found) return { target: found, error: null };
+  return { target: null, error: `未知 target：${id} · 可用 ${targets.map(item => item.id).join(', ')}` };
+}
+
+function targetSummary(target) {
+  return {
+    id: target.id,
+    label: target.label,
+    base: target.base,
+    host: target.host,
+    port: target.port,
+    sqlmapUrl: `${target.base}${target.sqlmapPath}`,
+    loginUrl: `${target.base}${target.loginPath}`,
+    hydraPort: target.hydraPort
+  };
+}
+
+
+/* 临时目标：只有本机发起的请求才允许（server.js 侧已校验来源），这里只做格式校验。
+   sqlmap 需要带参数的 URL，所以必须写明查询串，例如 /item?id=1 */
+function parseAdhocTarget(rawUrl) {
+  const text = String(rawUrl || '').trim();
+  if (!text) return { target: null, error: null };
+  if (text.length > 2048) return { target: null, error: 'URL 过长（上限 2048）' };
+  let url;
+  try {
+    url = new URL(text);
+  } catch (err) {
+    return { target: null, error: `不是合法 URL：${text}` };
+  }
+  if (!/^https?:$/.test(url.protocol)) return { target: null, error: '只支持 http / https' };
+  if (url.username || url.password) return { target: null, error: 'URL 里不要带账号密码' };
+  const pathAndQuery = `${url.pathname || '/'}${url.search || ''}`;
+  const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+  return {
+    target: {
+      id: 'adhoc',
+      label: '临时目标',
+      base: `${url.protocol}//${url.host}`,
+      host: url.hostname,
+      port,
+      sqlmapPath: pathAndQuery,
+      loginPath: '/login',
+      hydraPort: port,
+      hydraForm: DEFAULT_HYDRA_FORM,
+      adhoc: true,
+      hasQuery: !!url.search
+    },
+    error: null
+  };
+}
+
+let toolCache = { at: 0, tools: null, wordlist: null };
 
 async function commandExists(name) {
   /* Windows 下 execFile 不走 PATHEXT，必须显式调用 where.exe */
@@ -1365,19 +1517,16 @@ async function resolveSqlmap(python) {
   return { available: false, via: null, error: 'sqlmap 未安装' };
 }
 
-async function attackTools() {
-  if (toolCache.data && Date.now() - toolCache.at < 20000) return toolCache.data;
+async function detectTools() {
+  if (toolCache.tools && Date.now() - toolCache.at < 20000) return toolCache;
   const [python, hydraBin, msfBin] = await Promise.all([
     resolvePython(),
     commandExists('hydra'),
     commandExists('msfconsole')
   ]);
   const sqlmap = await resolveSqlmap(python);
-  const data = {
-    ok: true,
-    real: true,
-    scope: `${labTarget.TARGET_HOST}:${labTarget.TARGET_PORT}`,
-    target: labTarget.status(),
+  toolCache = {
+    at: Date.now(),
     tools: {
       sqlmap: {
         available: !!sqlmap.available,
@@ -1401,11 +1550,27 @@ async function attackTools() {
       python: python ? { available: true, name: python.name, version: python.version } : { available: false }
     },
     wordlist: fs.existsSync(LAB_WORDLIST)
-      ? { path: 'lab-wordlist.txt', entries: fs.readFileSync(LAB_WORDLIST, 'utf8').split(/\r?\n/).filter(Boolean).length }
+      ? { path: '靶机限制/lab-wordlist.txt', entries: fs.readFileSync(LAB_WORDLIST, 'utf8').split(/\r?\n/).filter(Boolean).length }
       : { path: null, entries: 0 }
   };
-  toolCache = { at: Date.now(), data };
-  return data;
+  return toolCache;
+}
+
+async function attackTools() {
+  const detected = await detectTools();
+  /* 目标列表每次现读，配置文件改动立即反映到 lab 命令 */
+  const targetSet = loadTargets();
+  return {
+    ok: true,
+    real: true,
+    scope: targetSet.targets.map(item => `${item.host}:${item.port}`).join(' · '),
+    targets: targetSet.targets.map(targetSummary),
+    targetError: targetSet.error,
+    active: targetSet.targets.length ? targetSet.targets[0].id : null,
+    labTarget: labTarget ? labTarget.status() : { ok: false, running: false, removed: true, host: null, port: null },
+    tools: detected.tools,
+    wordlist: detected.wordlist
+  };
 }
 
 function limitText(text, limit = 14000) {
@@ -1452,7 +1617,14 @@ function parseSqlmap(rawText) {
   return out;
 }
 
-async function sqlmapAttack() {
+async function sqlmapAttack(targetId, adhocUrl) {
+  const adhoc = parseAdhocTarget(adhocUrl);
+  if (adhoc.error) return { ok: false, real: true, tool: 'sqlmap', error: adhoc.error };
+  const resolved = adhoc.target
+    ? { target: adhoc.target, error: null }
+    : getTarget(targetId);
+  const { target, error: targetError } = resolved;
+  if (!target) return { ok: false, real: true, tool: 'sqlmap', error: targetError };
   const tools = await attackTools();
   const entry = tools.tools.sqlmap;
   if (!entry.available) {
@@ -1460,16 +1632,19 @@ async function sqlmapAttack() {
       ok: false,
       real: true,
       tool: 'sqlmap',
+      target: `${target.base}${target.sqlmapPath}`,
+      targetId: target.id,
       error: entry.error || 'sqlmap 未安装',
       hint: entry.hint
     };
   }
   const python = await resolvePython();
   const vendored = findFileUnder(path.join(__dirname, 'vendor', 'sqlmap'), 'sqlmap.py', 3);
+  const targetUrl = `${target.base}${target.sqlmapPath}`;
   let file;
   let args;
   const common = [
-    '-u', `${LAB_BASE}/item?id=1`,
+    '-u', targetUrl,
     '--batch',
     '--disable-coloring',
     '--flush-session',
@@ -1503,7 +1678,10 @@ async function sqlmapAttack() {
     tool: 'sqlmap',
     via: entry.via,
     command: [file, ...args].map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' '),
-    target: `${LAB_BASE}/item?id=1`,
+    target: targetUrl,
+    targetId: target.id,
+    adhoc: !!target.adhoc,
+    note: target.hasQuery === false ? 'URL 没有查询参数，sqlmap 可能找不到可注入点' : null,
     exitCode: result.code,
     durationMs: Date.now() - started,
     timedOut,
@@ -1515,43 +1693,67 @@ async function sqlmapAttack() {
 }
 
 function parseHydra(text, user) {
-  const found = text.match(/\[8793\]\[http-post-form\] host:\s*(\S+)\s+login:\s*(\S+)\s+password:\s*(\S+)/i);
+  const found = text.match(/\[(\d+)\]\[http-post-form\] host:\s*(\S+)\s+login:\s*(\S+)\s+password:\s*(\S+)/i);
   if (found) {
-    return { success: true, host: found[1], user: found[2], password: found[3] };
+    return { success: true, port: Number(found[1]), host: found[2], user: found[3], password: found[4] };
   }
   const alt = text.match(/password:\s*(\S+)\s*$/im);
   if (alt && /valid password found/i.test(text)) {
-    return { success: true, host: '127.0.0.1', user, password: alt[1] };
+    return { success: true, host: null, user, password: alt[1] };
   }
   return { success: false };
 }
 
-async function hydraAttack(userName) {
-  const user = /^[A-Za-z0-9_.-]{1,32}$/.test(String(userName || '')) ? String(userName) : 'admin';
+async function hydraAttack(opts = {}) {
+  const adhoc = parseAdhocTarget(opts.adhocUrl);
+  if (adhoc.error) return { ok: false, real: true, tool: 'hydra', error: adhoc.error };
+  const resolved = adhoc.target ? { target: adhoc.target, error: null } : getTarget(opts.targetId || '');
+  const target = resolved.target;
+  if (!target) return { ok: false, real: true, tool: 'hydra', error: resolved.error };
+
+  const user = /^[A-Za-z0-9_.-]{1,32}$/.test(String(opts.user || '')) ? String(opts.user) : 'admin';
+  const wordlist = String(opts.wordlist || '').trim();
+  if (!wordlist) {
+    return {
+      ok: false,
+      real: true,
+      tool: 'hydra',
+      error: 'hydra 需要字典文件 · 用法 hydra <URL> [用户] [字典路径]',
+      hint: '字典一行一个口令；没有字典就没法爆破'
+    };
+  }
+  if (!fs.existsSync(wordlist)) {
+    return { ok: false, real: true, tool: 'hydra', error: `字典不存在：${wordlist}` };
+  }
+  const form = String(opts.form || '').trim() || DEFAULT_HYDRA_FORM;
+  if (!form.startsWith('/') || !form.includes('^USER^') || !form.includes('^PASS^')) {
+    return { ok: false, real: true, tool: 'hydra', error: '表单模板格式不对，应形如 /login:user=^USER^&pass=^PASS^:F=invalid' };
+  }
+
   const tools = await attackTools();
   if (!tools.tools.hydra.available) {
     return {
       ok: false,
       real: true,
       tool: 'hydra',
+      target: `${target.base}${target.loginPath}`,
+      targetId: target.id,
       error: tools.tools.hydra.error,
       hint: tools.tools.hydra.hint
     };
   }
-  if (!fs.existsSync(LAB_WORDLIST)) {
-    return { ok: false, real: true, tool: 'hydra', error: 'lab-wordlist.txt 缺失' };
-  }
+
   const file = 'hydra';
   const args = [
     '-l', user,
-    '-P', LAB_WORDLIST,
-    '-s', String(labTarget.TARGET_PORT),
+    '-P', wordlist,
+    '-s', String(target.hydraPort),
     '-f',
     '-t', '4',
     '-V',
-    labTarget.TARGET_HOST,
+    target.host,
     'http-post-form',
-    '/login:user=^USER^&pass=^PASS^:F=invalid'
+    form
   ];
   const started = Date.now();
   const result = await run(file, args, { timeout: HYDRA_TIMEOUT, maxBuffer: 8 * 1024 * 1024 });
@@ -1562,7 +1764,8 @@ async function hydraAttack(userName) {
     real: true,
     tool: 'hydra',
     command: [file, ...args].map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' '),
-    target: `${labTarget.TARGET_HOST}:${labTarget.TARGET_PORT}/login`,
+    target: `${target.host}:${target.hydraPort}${target.loginPath}`,
+    targetId: target.id,
     exitCode: result.code,
     durationMs: Date.now() - started,
     stdout: limitText(result.stdout),
@@ -1572,13 +1775,20 @@ async function hydraAttack(userName) {
   };
 }
 
-async function msfAttack() {
+async function msfAttack(targetId, adhocUrl) {
+  const adhoc = parseAdhocTarget(adhocUrl);
+  if (adhoc.error) return { ok: false, real: true, tool: 'msfconsole', error: adhoc.error };
+  const resolved = adhoc.target ? { target: adhoc.target, error: null } : getTarget(targetId);
+  const target = resolved.target;
+  if (!target) return { ok: false, real: true, tool: 'msfconsole', error: resolved.error };
   const tools = await attackTools();
   if (!tools.tools.msfconsole.available) {
     return {
       ok: false,
       real: true,
       tool: 'msfconsole',
+      target: `${target.host}:${target.port}`,
+      targetId: target.id,
       error: tools.tools.msfconsole.error,
       hint: tools.tools.msfconsole.hint
     };
@@ -1586,8 +1796,8 @@ async function msfAttack() {
   const file = 'msfconsole';
   const script = [
     'use auxiliary/scanner/http/http_version',
-    `set RHOSTS ${labTarget.TARGET_HOST}`,
-    `set RPORT ${labTarget.TARGET_PORT}`,
+    `set RHOSTS ${target.host}`,
+    `set RPORT ${target.port}`,
     'set THREADS 1',
     'run',
     'exit'
@@ -1601,7 +1811,8 @@ async function msfAttack() {
     tool: 'msfconsole',
     module: 'auxiliary/scanner/http/http_version',
     command: [file, ...args].map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' '),
-    target: `${labTarget.TARGET_HOST}:${labTarget.TARGET_PORT}`,
+    target: `${target.host}:${target.port}`,
+    targetId: target.id,
     exitCode: result.code,
     durationMs: Date.now() - started,
     stdout: limitText(result.stdout),

@@ -3309,10 +3309,10 @@
       ['vuln', 'real evidence-based findings'],
       ['searchsploit <q>', 'real NVD + CISA KEV lookup'],
       ['msf', 'real native scanner console'],
-      ['msfconsole', 'real msf binary · lab target'],
-      ['lab', 'lab target + tool readiness'],
-      ['hydra', 'real wordlist attack · lab target'],
-      ['sqlmap', 'real injection scan · lab target'],
+      ['msfconsole [url]', 'real msf binary · http_version'],
+      ['lab', 'tool readiness + target state'],
+      ['hydra [url] [user] [wf]', 'real wordlist attack · 需字典文件'],
+      ['sqlmap [url]', 'real injection scan · 必须带参数'],
       ['payload <text>', 'real encoder + SHA-256'],
       ['scope / target / report', 'lab scope + real report'],
       ['clear / banner / reboot', 'terminal controls'],
@@ -3410,15 +3410,15 @@
       ['vuln', 'evidence-based findings · REAL'],
       ['searchsploit <q>', 'NVD 2.0 + CISA KEV · REAL'],
       ['msf', 'native scanner console · REAL'],
-      ['lab', 'lab target + tool readiness'],
-      ['hydra', 'real wordlist attack → 8793 · REAL'],
-      ['sqlmap', 'real injection scan → 8793 · REAL'],
+      ['lab', 'tool readiness + target state'],
+      ['hydra [url] [user] [wf]', 'real wordlist attack · REAL'],
+      ['sqlmap [url]', 'real injection scan · REAL'],
       ['payload <text>', 'real encoder + SHA-256 · REAL'],
       ['scope / target', 'loopback-only scope'],
       ['report', 'download real Markdown report']
     ];
     rows.forEach(([c, d, t]) => termLine(`<span class="white">${c.padEnd(20, ' ')}</span><span class="dim">${d.padEnd(38, ' ')}</span><span class="ok">[${t || 'REAL'}]</span>`));
-    termLine('<span class="dim">主动探测只允许回环地址 · 攻击只打内置靶机 127.0.0.1:8793 · 情报查询为真实公共只读接口</span>');
+    termLine('<span class="dim">主动探测只允许回环地址 · 攻击目标取自 靶机限制/lab-targets.json（默认 127.0.0.1:8793）</span>');
   }
 
   async function termOpsRecon() {
@@ -3765,39 +3765,69 @@
     if (lines.length > shown.length) termLine(`<span class="dim">… 其余 ${lines.length - shown.length} 行省略</span>`);
   }
 
-  async function termOpsHydra() {
-    termLine('<span class="dim">[*] hydra · 真实字典爆破 → 127.0.0.1:8793/login · 靶机自带弱口令</span>');
+  async function termOpsHydra(arg) {
+    const tokens = String(arg || '').trim().split(/\s+/).filter(Boolean);
+    if (!tokens.length) {
+      termLine('<span class="warn">[!] 用法：hydra &lt;URL|id&gt; [用户] [字典路径] [表单模板]</span>');
+      termLine('<span class="dim">例：hydra http://host/login admin words.txt</span>');
+      termLine('<span class="dim">表单模板省略时用 /login:user=^USER^&pass=^PASS^:F=invalid</span>');
+      return;
+    }
+    const first = tokens[0];
+    const isUrl = /^https?:\/\//i.test(first);
+    const user = tokens[1] || 'admin';
+    const wordlist = tokens[2] || '';
+    const form = tokens.slice(3).join(' ');
+    const qs = [
+      `user=${encodeURIComponent(user)}`,
+      isUrl ? `url=${encodeURIComponent(first)}` : `target=${encodeURIComponent(first)}`,
+      wordlist ? `wordlist=${encodeURIComponent(wordlist)}` : '',
+      form ? `form=${encodeURIComponent(form)}` : ''
+    ].filter(Boolean).join('&');
+    termLine(`<span class="dim">[*] hydra · 真实字典爆破 · ${escapeHtml(first)} · user ${escapeHtml(user)}</span>`);
     let d;
     try {
-      d = await termApi('/api/lab/attack/hydra?user=admin');
+      d = await termApi(`/api/lab/attack/hydra?${qs}`);
     } catch (err) {
       termLine(`<span class="err">[!] 爆破请求失败：</span> ${escapeHtml(String(err.message || err))}`);
       return;
     }
     if (!d.command) { termToolUnavailable(d, 'hydra'); return; }
+    termLine(`<span class="dim">target ${escapeHtml(d.adhoc ? '临时' : (d.targetId || '--'))} → ${escapeHtml(d.target || '--')}</span>`);
     termLine(`<span class="white">$ ${escapeHtml(d.command)}</span>`);
     termToolOutput(`${d.stdout || ''}\n${d.stderr || ''}`);
     if (d.parsed && d.parsed.success) {
       termLine(`<span class="ok">[+] HIT</span> ${escapeHtml(d.parsed.user)}:${escapeHtml(d.parsed.password)} · ${d.durationMs}ms · 真实登录成功`);
-      termOpsFindings.push(`[HIGH] 靶机弱口令 ${d.parsed.user}:${d.parsed.password} @ /login`);
+      termOpsFindings.push(`[HIGH] 弱口令 ${d.parsed.user}:${d.parsed.password} @ ${d.targetId || 'target'}`);
       termOpsEvidence.hydra = d;
     } else {
       termLine(`<span class="warn">[!] 未命中</span> · ${d.durationMs}ms · ${escapeHtml(d.error || '')}`);
       termOpsEvidence.hydra = d;
     }
-    termLine('<span class="dim">[i] 目标固定为内置靶机 · 字典 lab-wordlist.txt · 不做外网爆破</span>');
   }
 
-  async function termOpsSqlmap() {
-    termLine('<span class="dim">[*] sqlmap · 真实注入检测 → http://127.0.0.1:8793/item?id=1</span>');
+  async function termOpsSqlmap(arg) {
+    const raw = String(arg || '').trim();
+    if (!raw) {
+      termLine('<span class="warn">[!] 用法：sqlmap &lt;完整URL&gt;</span> <span class="dim">例如 sqlmap http://host/item?id=1</span>');
+      termLine('<span class="dim">白名单靶机已移除，现在必须显式给出目标</span>');
+      return;
+    }
+    const isUrl = /^https?:\/\//i.test(raw);
+    const query = isUrl
+      ? `?url=${encodeURIComponent(raw)}`
+      : `?target=${encodeURIComponent(raw)}`;
+    termLine(`<span class="dim">[*] sqlmap · 真实注入检测 · ${isUrl ? `临时目标 ${escapeHtml(raw)}` : `target ${escapeHtml(raw)}`}</span>`);
     let d;
     try {
-      d = await termApi('/api/lab/attack/sqlmap');
+      d = await termApi(`/api/lab/attack/sqlmap${query}`);
     } catch (err) {
       termLine(`<span class="err">[!] sqlmap 请求失败：</span> ${escapeHtml(String(err.message || err))}`);
       return;
     }
     if (!d.command) { termToolUnavailable(d, 'sqlmap'); return; }
+    termLine(`<span class="dim">target ${escapeHtml(d.adhoc ? '临时' : (d.targetId || '--'))} → ${escapeHtml(d.target || '--')}</span>`);
+    if (d.note) termLine(`<span class="warn">[!] ${escapeHtml(d.note)}</span>`);
     termLine(`<span class="white">$ ${escapeHtml(d.command)}</span>`);
     termToolOutput(`${d.stdout || ''}\n${d.stderr || ''}`);
     const p = d.parsed || {};
@@ -3807,24 +3837,32 @@
       termLine(`<span class="dim">user=${escapeHtml(p.currentUser || '--')} · db=${escapeHtml(p.currentDb || '--')} · host=${escapeHtml(p.hostname || '--')}</span>`);
       if ((p.databases || []).length) termLine(`<span class="dim">databases</span> ${escapeHtml(p.databases.join(', '))}`);
       if ((p.tables || []).length) termLine(`<span class="dim">tables</span> ${escapeHtml(p.tables.join(', '))}`);
-      termOpsFindings.push(`[CRITICAL] 靶机 /item?id= SQL 注入（${p.parameter || 'id'} · ${p.dbms || 'sqlite'}）`);
+      termOpsFindings.push(`[CRITICAL] SQL 注入 ${d.targetId || ''}（${p.parameter || 'id'} · ${p.dbms || 'sqlite'}）`);
     } else {
       termLine(`<span class="warn">[!] 未确认注入</span> · exit ${d.exitCode} · ${escapeHtml(d.error || '')}`);
     }
     termOpsEvidence.sqlmap = d;
-    termLine(`<span class="dim">[i] 目标固定为内置靶机 · --batch --level=1 --risk=1 · 无后渗透、无文件写入</span>`);
+    termLine('<span class="dim">[i] --batch --level=1 --risk=1 · 无后渗透、无文件写入</span>');
   }
 
-  async function termOpsMsfReal() {
-    termLine('<span class="dim">[*] msfconsole · auxiliary/scanner/http/http_version → 127.0.0.1:8793</span>');
+  async function termOpsMsfReal(arg) {
+    const raw = String(arg || '').trim();
+    if (!raw) {
+      termLine('<span class="warn">[!] 用法：msfconsole &lt;URL|id&gt;</span> <span class="dim">例：msfconsole http://host:8080/</span>');
+      return;
+    }
+    const isUrl = /^https?:\/\//i.test(raw);
+    const query = isUrl ? `?url=${encodeURIComponent(raw)}` : `?target=${encodeURIComponent(raw)}`;
+    termLine(`<span class="dim">[*] msfconsole · auxiliary/scanner/http/http_version · ${escapeHtml(raw)}</span>`);
     let d;
     try {
-      d = await termApi('/api/lab/attack/msf');
+      d = await termApi(`/api/lab/attack/msf${query}`);
     } catch (err) {
       termLine(`<span class="err">[!] msf 请求失败：</span> ${escapeHtml(String(err.message || err))}`);
       return;
     }
     if (!d.command) { termToolUnavailable(d, 'msfconsole'); return; }
+    termLine(`<span class="dim">target ${escapeHtml(d.targetId || '--')} → ${escapeHtml(d.target || '--')}</span>`);
     termLine(`<span class="white">$ ${escapeHtml(d.command)}</span>`);
     termToolOutput(`${d.stdout || ''}\n${d.stderr || ''}`);
     termLine(`<span class="${d.ok ? 'ok' : 'warn'}">[${d.ok ? '+' : '!'}]</span> exit ${d.exitCode} · ${d.durationMs}ms`);
@@ -3875,26 +3913,42 @@
       termLine(`<span class="err">[!] LAB 状态读取失败：</span> ${escapeHtml(String(err.message || err))}`);
       return;
     }
-    const up = !!(target && target.running);
-    termLine(`<span class="${up ? 'ok' : 'err'}">[${up ? '+' : '!'}] 靶机</span> ${escapeHtml((target && target.host) || '--')}:${(target && target.port) || '--'} · ${up ? `up ${target.uptimeSeconds}s · 登录成功 ${target.logins} / 尝试 ${target.loginAttempts}` : '未运行'}`);
-    termLine(`<span class="dim">banner ${escapeHtml((target && target.banner) || '--')} · 内存 SQLite · 仅回环</span>`);
+    const builtin = target || (tools && tools.labTarget) || null;
+    const removed = !!(builtin && builtin.removed);
+    const up = !!(builtin && builtin.running);
+    if (removed) {
+      termLine('<span class="warn">[!] 内置靶机</span> <span class="dim">已移除（靶机限制/ 目录不存在）· 直接用 sqlmap &lt;URL&gt; 指定目标</span>');
+    } else {
+      termLine(`<span class="${up ? 'ok' : 'err'}">[${up ? '+' : '!'}] 内置靶机</span> ${escapeHtml((builtin && builtin.host) || '--')}:${(builtin && builtin.port) || '--'} · ${up ? `up ${builtin.uptimeSeconds}s · 登录成功 ${builtin.logins} / 尝试 ${builtin.loginAttempts}` : '未运行'}`);
+      termLine(`<span class="dim">banner ${escapeHtml((builtin && builtin.banner) || '--')} · 内存 SQLite · 仅回环</span>`);
+    }
+    const targets = (tools && tools.targets) || [];
+    if (targets.length) {
+      termLine(`<span class="dim">靶机限制/lab-targets.json · ${targets.length} 个目标</span>`);
+      targets.forEach(item => {
+        termLine(`  <span class="ok">${escapeHtml(item.id.padEnd(10, ' '))}</span><span class="white">${escapeHtml(item.label)}</span> <span class="dim">${escapeHtml(item.sqlmapUrl)}</span>`);
+      });
+    }
+    if (tools && tools.targetError) termLine(`<span class="warn">[!] ${escapeHtml(tools.targetError)}</span>`);
+    if (tools && tools.remoteTargetMode) {
+      termLine(`<span class="dim">远程填目标：${tools.remoteTargetMode === 'local' ? '仅本机（SKYNET_REMOTE_TARGETS=local）' : '允许局域网任何登录用户'}</span>`);
+    }
     const t = (tools && tools.tools) || {};
     [['sqlmap', t.sqlmap], ['hydra', t.hydra], ['msfconsole', t.msfconsole]].forEach(([name, info]) => {
       const on = !!(info && info.available);
       const detail = on ? (info.via || 'ready') : (info.hint || info.error || 'not installed');
       termLine(`<span class="${on ? 'ok' : 'warn'}">[${on ? '+' : '-'}]</span> <span class="white">${name.padEnd(12)}</span><span class="dim">${escapeHtml(detail)}</span>`);
     });
-    const wordlist = (tools && tools.wordlist) || {};
-    termLine(`<span class="dim">字典 ${escapeHtml(wordlist.path || '--')} · ${wordlist.entries || 0} 条 · 攻击目标锁定 ${escapeHtml((tools && tools.scope) || '--')}</span>`);
-    termLine('<span class="dim">[i] sqlmap / hydra / msfconsole 走真实进程；缺失时如实报错，绝不返回假结果</span>');
+    termLine('<span class="dim">用法 sqlmap &lt;完整URL&gt; · hydra / msfconsole 需要 lab-targets.json 里的 id</span>');
+    termLine('<span class="dim">[i] 走真实进程；缺失时如实报错，绝不返回假结果</span>');
   }
 
   function termOpsScope() {
     termLine('<span class="ok">[+] ACTIVE SCOPE</span> 127.0.0.1 / localhost / ::1 · 只对本机服务发起探测');
-    termLine('<span class="ok">[+] ATTACK SCOPE</span> 127.0.0.1:8793 · 内置靶机（弱口令 + 真实注入点）');
+    termLine('<span class="ok">[+] ATTACK SCOPE</span> 白名单靶机已移除 · 目标由 sqlmap &lt;URL&gt; 显式指定（仅本机可发起）');
     termLine('<span class="ok">[+] PASSIVE INTEL</span> NVD CVE 2.0 · CISA KEV · DNS · RDAP（真实公共只读接口）');
     termLine(`<span class="ok">[+] TARGET</span> ${escapeHtml(termOpsTargetHost)}`);
-    termLine('<span class="warn">[!] 不做外网扫描 · 不做后渗透 / 反弹 shell · 攻击只打内置靶机</span>');
+    termLine('<span class="warn">[!] 不做后渗透 / 反弹 shell · 目标只能从配置文件白名单里选</span>');
   }
 
   function termOpsTarget(value) {
@@ -4138,17 +4192,17 @@
         await termOpsMsf(arg);
         break;
       case 'msfconsole':
-        await termOpsMsfReal();
+        await termOpsMsfReal(arg);
         break;
       case 'lab':
         await termOpsLab();
         break;
       case 'hydra':
-        await termOpsHydra();
+        await termOpsHydra(arg);
         break;
       case 'sqlmap':
       case 'sqli':
-        await termOpsSqlmap();
+        await termOpsSqlmap(arg);
         break;
       case 'payload':
         await termOpsPayload(arg);

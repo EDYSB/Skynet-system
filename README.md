@@ -195,8 +195,7 @@ http://172.19.12.65:8792/
 ### 真实边界与行为
 
 - 主动探测只允许 `127.0.0.1` / `localhost` / `::1`，不做外网扫描
-- 攻击模块（`hydra` / `sqlmap` / `msfconsole`）的目标在代码里硬编码为内置靶机 `127.0.0.1:8793`，不接受任何 host / port 参数
-- 靶机 `lab-target.js` 是故意留洞的本地服务：内存 SQLite、弱口令、真实 SQL 注入点；进程退出即销毁，不落盘、不含真实凭据
+- `sqlmap` 的目标由终端里显式给出的 URL 决定，只接受本机发起的请求（远程来源一律 403）
 - 工具缺失时返回真实错误与安装方式（`lab` 命令可查），绝不伪造输出
 - `searchsploit` 需要联网访问 NVD / CISA；失败时显示真实错误，不返回假条目
 - 不生成反弹 shell、不做后渗透、不做持久化；`payload` 只做编码
@@ -217,20 +216,56 @@ http://172.19.12.65:8792/
 
 需要 Node.js 22+（内置 WebSocket），无需 npm 依赖。
 
-### 攻击模块与靶机
-
-`start.bat` 会同时启动内置靶机 **`127.0.0.1:8793`**（`lab-target.js`），它故意带弱口令和 SQL 注入点，只监听回环地址。
+### 攻击模块
 
 | 模块 | 现状 |
 | --- | --- |
-| `sqlmap` | 已内置 `vendor/sqlmap/`（gitee 镜像克隆），终端里 `sqlmap` 直接跑真实注入检测 |
+| `sqlmap` | 已内置 `vendor/sqlmap/`（gitee 镜像克隆），终端里 `sqlmap <URL>` 直接跑真实注入检测 |
 | `hydra` | 无官方 Windows 构建，`hydra` 命令会如实报错；装了 hydra 的机器上自动可用 |
 | `msfconsole` | MSF 不支持原生 Windows；装在 WSL / Linux 上后 `msfconsole` 命令自动可用 |
 | `payload` | 只做编码与摘要，不生成 shellcode / 反弹 shell |
 
-`lab` 命令随时查看靶机与三个工具的真实就绪状态。工具缺失时不会返回假结果。
+`lab` 命令随时查看三个工具的真实就绪状态。工具缺失时不会返回假结果。
 
-> 杀毒软件通常会把 sqlmap / metasploit 报为 hacktool。**不要把整机防护关掉**，给项目目录加排除项即可；演示结束记得恢复。
+> 杀毒软件通常会把 sqlmap / metasploit 报为 hacktool。**不要把整机防护关掉**，给 `vendor\sqlmap` 加个排除项即可；演示结束记得删掉排除项。
+
+### 指定目标
+
+三个工具都接受终端里直接给的 URL：
+
+```
+sqlmap http://172.19.12.65:8000/product?id=1
+msfconsole http://172.19.12.65:8000/
+hydra http://172.19.12.65:8000/login admin words.txt
+```
+
+规矩：
+
+1. **sqlmap 必须带查询参数**（`?id=1` 这种），否则没有注入点可测；只给路径会提示“没有查询参数”，不会瞎跑。
+2. **hydra 必须带字典文件**：`hydra <URL> [用户] [字典路径] [表单模板]`，字典一行一个口令。表单模板省略时用 `/login:user=^USER^&pass=^PASS^:F=invalid`；登录失败页特征不同的要自己写，例如 `/admin/login:username=^USER^&password=^PASS^:F=用户名或密码错误`。
+3. **msfconsole 只需要主机和端口**：`msfconsole <URL>` 从 URL 里取 RHOSTS / RPORT，跑 `auxiliary/scanner/http/http_version`。
+4. **只接受本机发起的请求**。面板监听 `0.0.0.0`，如果谁都能远程填目标，它就成局域网共享扫描器了。所以 `url=` 参数只放行来源地址是回环或本机网卡的请求，别的机器发来一律 `403`。
+
+> 注意：URL 支持只是接口层面。这台 Windows 上 hydra 和 msfconsole 仍然跑不起来（没有官方 Windows 构建），要真跑得用 WSL 或 Kali 虚拟机；届时面板里这些命令会自动变成真实执行。
+
+### 靶机限制（已删除）
+
+原来的本地靶机（`127.0.0.1:8793`）、目标白名单 `lab-targets.json`、字典 `lab-wordlist.txt` 都在 `靶机限制/` 目录，**已按要求整个删除**。删除后的表现：
+
+- 面板照常启动，`lab` 里显示「内置靶机 已移除」
+- `sqlmap` 没有默认目标，必须显式给 URL，否则提示用法
+- `hydra` / `msfconsole` 改为接受 URL；没有 URL 时给用法提示，不再依赖白名单
+
+想恢复其中两个文件（版本库里有）：
+
+```
+git checkout HEAD -- lab-target.js lab-wordlist.txt
+mkdir 靶机限制
+move lab-target.js 靶机限制\
+move lab-wordlist.txt 靶机限制\
+```
+
+`lab-targets.json` 从未提交过，需要照原样手写（380 字节，结构见 git 历史之外的本说明上一条）。把三个文件放回 `靶机限制/` 后，`lab.js` 和 `server.js` 会自动重新加载，不用改代码。
 
 ### 直接打开
 
@@ -254,10 +289,8 @@ http://172.19.12.65:8792/
 | `terminal.css` | eDEX 风格终端 |
 | `app.js` | 3D 地球、实时数据、地图、网络、终端、真实安全指令 |
 | `server.js` | 静态服务 + 身份会话 + 真实数据聚合 + 探针 API 路由 + 凭据审计 |
-| `lab.js` | 真实探针库：TCP / banner / TLS / HTTP / DNS / RDAP / ICMP / 进程 / 主机姿态 / 注入审计 / 结论推导 |
-| `lab-target.js` | 本地靶机：内存 SQLite + 弱口令 + 真实注入点，仅 `127.0.0.1:8793` |
-| `lab-wordlist.txt` | 靶机字典（70 条常见口令） |
-| `vendor/sqlmap/` | 真实 sqlmap（上游源码克隆，仅供本地靶场） |
+| `lab.js` | 真实探针库：TCP / banner / TLS / HTTP / DNS / RDAP / ICMP / 进程 / 主机姿态 / 注入审计 / 真实工具执行 |
+| `vendor/sqlmap/` | 真实 sqlmap（上游源码克隆） |
 | `intel.js` | 真实漏洞情报：NVD CVE API 2.0 + CISA KEV |
 | `start.bat` | 一键启动 |
 | `vendor/three.min.js` | Three.js r160 |
@@ -302,7 +335,9 @@ http://172.19.12.65:8792/
 - 观测画面无信号状态与两路不同纹样通过
 - 终端命令、文件读取、系统遥测、真实进程列表、键盘输入通过
 - 终端内 `ops` / `recon` / `nmap` / `web` / `audit` / `vuln` / `searchsploit` / `msf` / `msfconsole` / `lab` / `hydra` / `sqlmap` / `payload` / `report` 指令通过
-- 靶机 `127.0.0.1:8793` 随服务启动；`/health`、`/item?id=1`、`/login` 真实响应通过
+- `靶机限制/` 删除后面板仍能启动；`lab` 显示“内置靶机 已移除”，`sqlmap` 无参数时提示用法
+- `sqlmap <url>` 直接打临时目标通过；无查询串时只提示不误跑；非本机来源的 `url=` 请求返回 403
+- 配置写坏时回退内置靶机并在 `lab` 里显示具体错误行
 - `sqlmap` 对靶机检出 SQLite 注入（banner 3.53.4），枚举出 `items` / `secrets` / `users` 三张表
 - `hydra` / `msfconsole` 未安装时返回真实错误与安装提示，不伪造命中结果
 - `/api/lab/*` 端点：未登录 401、登录后返回真实 JSON；`searchsploit` 返回真实 NVD / KEV 条目

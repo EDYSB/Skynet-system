@@ -13,7 +13,12 @@ const os = require('os');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const lab = require('./lab');
-const labTarget = require('./lab-target');
+let labTarget = null;
+try {
+  labTarget = require('./靶机限制/lab-target');
+} catch (err) {
+  labTarget = null;   /* 靶机限制/ 已移除，面板照常启动 */
+}
 const intel = require('./intel');
 
 const ROOT = __dirname;
@@ -389,6 +394,44 @@ function safeEqual(a, b) {
 
 function clientIp(req) {
   return (req.socket && req.socket.remoteAddress) || 'local';
+}
+
+/* 临时目标来源策略：
+   - 默认 allow：局域网登录用户也可以填扫描目标（便于远程演示）
+   - 设 SKYNET_REMOTE_TARGETS=local 可恢复"只允许本机发起"的 403 限制
+   远程来源一律写一行审计日志，方便事后核对。 */
+const REMOTE_TARGET_MODE = String(process.env.SKYNET_REMOTE_TARGETS || 'allow').toLowerCase() === 'local'
+  ? 'local'
+  : 'allow';
+
+function loopbackOrSelfClient(req) {
+  const raw = String(clientIp(req) || '').replace(/^::ffff:/, '');
+  if (!raw) return false;
+  if (raw === '127.0.0.1' || raw === '::1' || raw === 'localhost') return true;
+  const self = new Set();
+  Object.values(os.networkInterfaces()).forEach(list => {
+    (list || []).forEach(nic => {
+      if (nic && nic.address) self.add(nic.address);
+    });
+  });
+  return self.has(raw);
+}
+
+function rejectRemoteAdhoc(req, res, tool, adhocUrl) {
+  if (!adhocUrl) return false;
+  const fromSelf = loopbackOrSelfClient(req);
+  if (!fromSelf) {
+    console.warn(`[attack] 远程临时目标 · ${tool} · 来源 ${clientIp(req)} · 目标 ${String(adhocUrl).slice(0, 200)}`);
+  }
+  if (REMOTE_TARGET_MODE !== 'local' || fromSelf) return false;
+  sendJSON(res, 403, {
+    ok: false,
+    real: true,
+    tool,
+    error: '自定义目标只允许从本机发起 · 已开启 SKYNET_REMOTE_TARGETS=local',
+    hint: '去掉该环境变量即可恢复远程可填目标'
+  });
+  return true;
 }
 
 /* ------------------------------------------------------------
@@ -996,25 +1039,49 @@ async function handleLabApi(req, res, url) {
       sendJSON(res, 200, await credentialAudit(clientIp(req)));
       return;
     }
-    /* ---- LAB 攻击面：真实工具，目标硬编码为本机靶机 ---- */
+    /* ---- LAB 攻击面：真实工具（白名单靶机已移除，只接受 URL） ---- */
     case 'target': {
+      if (!labTarget) {
+        sendJSON(res, 200, { ok: false, running: false, removed: true, error: '靶机限制/ 已移除' });
+        return;
+      }
       sendJSON(res, 200, labTarget.status());
       return;
     }
     case 'attack/tools': {
-      sendJSON(res, 200, await lab.attackTools());
+      const data = await lab.attackTools();
+      data.remoteTargetMode = REMOTE_TARGET_MODE;
+      sendJSON(res, 200, data);
       return;
     }
     case 'attack/sqlmap': {
-      sendJSON(res, 200, await lab.sqlmapAttack());
+      const adhocUrl = url.searchParams.get('url') || '';
+      if (rejectRemoteAdhoc(req, res, 'sqlmap', adhocUrl)) return;
+      sendJSON(res, 200, await lab.sqlmapAttack(
+        url.searchParams.get('target') || '',
+        adhocUrl
+      ));
       return;
     }
     case 'attack/hydra': {
-      sendJSON(res, 200, await lab.hydraAttack(url.searchParams.get('user') || 'admin'));
+      const adhocUrl = url.searchParams.get('url') || '';
+      if (rejectRemoteAdhoc(req, res, 'hydra', adhocUrl)) return;
+      sendJSON(res, 200, await lab.hydraAttack({
+        targetId: url.searchParams.get('target') || '',
+        adhocUrl,
+        user: url.searchParams.get('user') || 'admin',
+        wordlist: url.searchParams.get('wordlist') || '',
+        form: url.searchParams.get('form') || ''
+      }));
       return;
     }
     case 'attack/msf': {
-      sendJSON(res, 200, await lab.msfAttack());
+      const adhocUrl = url.searchParams.get('url') || '';
+      if (rejectRemoteAdhoc(req, res, 'msfconsole', adhocUrl)) return;
+      sendJSON(res, 200, await lab.msfAttack(
+        url.searchParams.get('target') || '',
+        adhocUrl
+      ));
       return;
     }
     case 'vuln': {
@@ -1242,13 +1309,17 @@ const server = http.createServer(async (req, res) => {
 
 startRealCollectors();
 
-labTarget.start().then(result => {
-  if (result.ok) {
-    console.log(`  靶机     http://${labTarget.TARGET_HOST}:${labTarget.TARGET_PORT}/  ${result.already ? '已在运行' : '已启动'}`);
-  } else {
-    console.log(`  靶机     启动失败：${result.error}`);
-  }
-});
+if (labTarget) {
+  labTarget.start().then(result => {
+    if (result.ok) {
+      console.log(`  靶机     http://${labTarget.TARGET_HOST}:${labTarget.TARGET_PORT}/  ${result.already ? '已在运行' : '已启动'}`);
+    } else {
+      console.log(`  靶机     启动失败：${result.error}`);
+    }
+  });
+} else {
+  console.log('  靶机     已移除（靶机限制/ 不存在）· 用 sqlmap <URL> 直接指定目标');
+}
 
 server.on('error', err => {
   if (err && err.code === 'EADDRINUSE') {
