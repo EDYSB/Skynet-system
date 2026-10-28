@@ -25,8 +25,8 @@ const ROOT = __dirname;
 const PORT = Number(process.env.PORT) || 8792;
 const HOST = '0.0.0.0';
 
-const AUTH_USER = process.env.SKYNET_USER || 'operator';
-const AUTH_PASS = process.env.SKYNET_PASS || 'Skynet-Lab-8Q2x';
+const AUTH_USER = process.env.SKYNET_USER || 'EDY_POWERQ';
+const AUTH_PASS = process.env.SKYNET_PASS || 'EDYSB';
 const SESSION_TTL = 12 * 60 * 60 * 1000;
 const sessions = new Map();
 const loginAttempts = new Map();
@@ -480,7 +480,7 @@ function credentialPolicy() {
     ok: true,
     real: true,
     user: AUTH_USER,
-    usesDefaultCredential: AUTH_PASS === 'Skynet-Lab-8Q2x',
+    usesDefaultCredential: AUTH_PASS === 'EDYSB',
     credentialSource: process.env.SKYNET_PASS ? '环境变量 SKYNET_PASS' : '内置默认值（README 公开）',
     sessionTtlHours: SESSION_TTL / 3600000,
     cookie: { httpOnly: true, secure: false, sameSite: 'Lax', path: '/' },
@@ -1166,16 +1166,26 @@ async function handleLabApi(req, res, url) {
     }
     case 'nmap': {
       const host = url.searchParams.get('host') || '';
-      if (rejectRemoteAdhoc(req, res, 'nmap', host)) return;
-      sendJSON(res, 200, await lab.nmapRun(host, url.searchParams.get('ports') || ''));
+      const cmd = url.searchParams.get('cmd') || '';
+      if (rejectRemoteAdhoc(req, res, 'nmap', host || cmd)) return;
+      sendJSON(res, 200, await lab.nmapRun(host, url.searchParams.get('ports') || '', cmd));
+      return;
+    }
+    case 'tool': {
+      const name = url.searchParams.get('name') || '';
+      const cmd = url.searchParams.get('cmd') || '';
+      if (rejectRemoteAdhoc(req, res, 'tool', cmd)) return;
+      sendJSON(res, 200, await lab.toolRun(name, cmd));
       return;
     }
     case 'attack/sqlmap': {
       const adhocUrl = url.searchParams.get('url') || '';
-      if (rejectRemoteAdhoc(req, res, 'sqlmap', adhocUrl)) return;
+      const cmd = url.searchParams.get('cmd') || '';
+      if (rejectRemoteAdhoc(req, res, 'sqlmap', adhocUrl || cmd)) return;
       sendJSON(res, 200, await lab.sqlmapAttack(
         url.searchParams.get('target') || '',
-        adhocUrl
+        adhocUrl,
+        cmd
       ));
       return;
     }
@@ -1486,7 +1496,7 @@ if (labTarget) {
     }
   });
 } else {
-  console.log('  靶机     已移除（靶机限制/ 不存在）· 用 sqlmap <URL> 直接指定目标');
+  console.log('  靶机     已移除（靶机限制/ 不存在）· 用 sqlmap <URL> [参数…] / tool <name> [参数…] 原生调用');
 }
 
 server.on('error', err => {

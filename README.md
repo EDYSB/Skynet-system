@@ -22,8 +22,8 @@
 
 | 项目 | 值 |
 | --- | --- |
-| 操作员账号 | `operator`（登录页已预填） |
-| 访问口令 | `Skynet-Lab-8Q2x` |
+| 操作员账号 | `EDY_POWERQ`（登录页已预填） |
+| 访问口令 | `EDYSB` |
 | 默认端口 | `8792` |
 
 凭据可在启动前用环境变量覆盖：
@@ -71,8 +71,8 @@ http://127.0.0.1:8792/
 
 ### 登录不上排查
 
-- 口令 `Skynet-Lab-8Q2x` 区分大小写，账号大小写不敏感；前后空格已自动忽略
-- 账号 `operator` 已预填在输入框里，只需输入口令；如果账号框被清空，会提示“请输入操作员账号”
+- 口令 `EDYSB` 区分大小写，账号大小写不敏感；前后空格已自动忽略
+- 账号 `EDY_POWERQ` 已预填在输入框里，只需输入口令；如果账号框被清空，会提示“请输入操作员账号”
 - 浏览器自动填充可能填入旧口令；登录框聚焦时会全选，直接重新输入，或点“显示”核对
 - 页面右上角显示 429 时等待 60 秒；重启 `server.js` 会立即清空该 IP 的失败计数
 - 确认地址是 `http://IP:8792/`，旧标签页请 `Ctrl+F5` 强制刷新
@@ -189,7 +189,7 @@ http://127.0.0.1:8792/
 | --- | --- |
 | `ops` / `tools` | 真实探测清单 |
 | `recon` | 主机 / OS / CPU / 网卡 / 网关 / DNS / 补丁 / Defender / SMBv1 / RDP / 本机工具 |
-| `nmap [ports]` | 127.0.0.1 TCP connect 扫描，真实握手与延迟 |
+| `nmap [ports]` | 只给端口时 = 127.0.0.1 TCP connect 扫描；带 `-` 参数时整行透传给真 nmap |
 | `web` | 本机 HTTP 指纹 + TLS 证书（真实状态码、响应头、耗时） |
 | `audit` | Defender / 防火墙 / UAC / SMBv1 / SMB 签名 / RDP / Secure Boot / 补丁 / 监听端口 |
 | `vuln` | 由真实读数推导结论，附 CVE / CISA KEV 参考 |
@@ -197,8 +197,9 @@ http://127.0.0.1:8792/
 | `msf` | 原生扫描控制台（端口 / HTTP 头 / OPTIONS / banner / TLS / DNS / RDAP / robots.txt） |
 | `lab` | 真实工具就绪情况（sqlmap 等） |
 | `toolkit` | 16 个工具的安装状态：`tools/` 优先，其次 `PATH`，缺的给出装法 |
-| `nmap <host> [ports]` | 装了真 nmap 就走真 nmap；只给端口时退回本机 connect 扫描 |
-| `sqlmap` / `sqli` | 真实注入检测 + 库 / 表枚举，目标由 URL 指定 |
+| `nmap <host> [ports]` | 装了真 nmap 就走真 nmap；带 `-sV`、`-p-`、`--script` 等参数时整行原生透传 |
+| `tool <name> [args]` | 用原生命令行跑任意已登记工具（nmap / hydra / msfconsole / vol / ffuf / hashcat …） |
+| `sqlmap` / `sqli` | 真实注入检测；`sqlmap <url> [任意 sqlmap 参数…]` 原生透传 |
 | `payload <text>` | 真实编码（base64 / hex / URL）+ SHA-256 + 信息熵（不生成 shellcode） |
 | `scope` / `target` | 回环作用域 |
 | `report` | 下载真实 Markdown 报告 |
@@ -207,7 +208,7 @@ http://127.0.0.1:8792/
 ### 真实边界与行为
 
 - 主动探测只允许 `127.0.0.1` / `localhost` / `::1`，不做外网扫描
-- `sqlmap` 的目标由终端里显式给出的 URL 决定，只接受本机发起的请求（远程来源一律 403）
+- `sqlmap` / `nmap` / `tool` 的参数原样传给真实二进制（不经过 shell，支持引号）；`sqlmap` 的目标由终端里显式给出的 URL 决定
 - 工具缺失时返回真实错误与安装方式（`lab` 命令可查），绝不伪造输出
 - `searchsploit` 需要联网访问 NVD / CISA；失败时显示真实错误，不返回假条目
 - 不生成反弹 shell、不做后渗透、不做持久化；`payload` 只做编码
@@ -232,7 +233,9 @@ http://127.0.0.1:8792/
 
 | 模块 | 现状 |
 | --- | --- |
-| `sqlmap` | 已内置 `tools/sqlmap/`（gitee 镜像克隆），终端里 `sqlmap <URL>` 直接跑真实注入检测 |
+| `sqlmap` | 已内置 `tools/sqlmap/`（gitee 镜像克隆），终端里 `sqlmap <URL> [参数…]` 全部原生透传 |
+| `nmap` | 已内置 `tools/nmap/`，`nmap` 带任何 `-` 参数时整行原生透传 |
+| `tool` | 任意已登记工具的原生命令行入口，缺什么装什么，`lab` / `toolkit` 查看状态 |
 | `payload` | 只做编码与摘要，不生成 shellcode / 反弹 shell |
 
 `lab` 命令查看真实工具就绪状态。
@@ -245,12 +248,19 @@ http://127.0.0.1:8792/
 
 ```
 sqlmap http://127.0.0.1:8000/product?id=1
+sqlmap "http://127.0.0.1:8000/product?id=1" --random-agent --dbs
+sqlmap -u "http://127.0.0.1:8000/product?id=1" --technique=BEUST --tamper=space2comment
+nmap -sV -Pn -p 1-1000 172.19.12.70
+tool nmap --script vuln 172.19.12.70
+tool sqlmap --version
 ```
 
 规矩：
 
 1. **sqlmap 必须带查询参数**（`?id=1` 这种），否则没有注入点可测；只给路径会提示“没有查询参数”，不会瞎跑。
-2. **来源策略可切换**。默认允许局域网任何已登录用户填目标（方便远程演示），每次远程调用会在服务端窗口打一行审计日志；设 `SKYNET_REMOTE_TARGETS=local` 就退回“只允许本机发起”，其余来源一律 `403`。
+2. **参数原样透传**。`sqlmap` / `nmap` / `tool` 后面的内容按原生命令行拆分（支持单/双引号，`--headers="...\n..."` 里的 `\n` 保持字面量），不经过 shell；上限 96 个参数 / 4000 字符。
+3. **来源策略可切换**。默认允许局域网任何已登录用户填目标（方便远程演示），每次远程调用会在服务端窗口打一行审计日志；设 `SKYNET_REMOTE_TARGETS=local` 就退回“只允许本机发起”，其余来源一律 `403`。
+4. **`tool` 的边界**：只运行 `toolkit` 已登记的工具，或 `tools/` 下同名二进制；不会把任意名字交给系统 shell。
 
 ### 靶机限制（已删除）
 
@@ -258,7 +268,7 @@ sqlmap http://127.0.0.1:8000/product?id=1
 
 - 面板照常启动，`lab` 里显示「内置靶机 已移除」
 - `sqlmap` 没有默认目标，必须显式给 URL，否则提示用法
-- `hydra` / `msfconsole` 相关命令已从终端移除（Windows 上跑不起来）
+- `hydra` / `msfconsole` 不再有专用终端命令；装好后可用 `tool hydra …` / `tool msfconsole …` 原生调用
 
 想恢复其中两个文件（版本库里有）：
 
@@ -336,6 +346,8 @@ move lab-wordlist.txt 靶机限制\
 - 终端内 `ops` / `recon` / `nmap` / `web` / `audit` / `vuln` / `searchsploit` / `msf` / `lab` / `sqlmap` / `payload` / `report` / `ipconfig` / `ver` / `tasklist` / `netstat` 指令通过
 - `靶机限制/` 删除后面板仍能启动；`lab` 显示“内置靶机 已移除”，`sqlmap` 无参数时提示用法
 - `sqlmap <url>` 直接打临时目标通过；无查询串时只提示不误跑；`SKYNET_REMOTE_TARGETS=local` 时非本机来源返回 403
+- `sqlmap <url> --random-agent --headers="..."` 原生参数透传通过（引号、`\n` 保留）
+- `nmap -sV -Pn <host>` 与 `tool nmap --version` 原生调用通过；`tool <unknown>` 被拒绝
 - 终端 `cd` / `dir` / `type` / `cls` / `echo` / `pwd` 可用，提示符跟随当前目录
 - `tools/sqlmap` 被识别为 sqlmap 来源，`lab` 显示 `via: tools/sqlmap`
 - 配置写坏时回退内置靶机并在 `lab` 里显示具体错误行

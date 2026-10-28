@@ -599,24 +599,43 @@ async function rdapProbe(ipValue) {
 
 function parsePingOutput(text, platform) {
   const out = { lossPct: null, received: null, sent: null, min: null, avg: null, max: null, ttl: null };
-  if (platform === 'win32') {
-    const loss = /\((\d+)%\s*loss\)/i.exec(text);
-    const stats = /Received\s*=\s*(\d+),\s*Lost\s*=\s*(\d+)/i.exec(text);
-    const rtt = /Minimum\s*=\s*(\d+)ms,\s*Maximum\s*=\s*(\d+)ms,\s*Average\s*=\s*(\d+)ms/i.exec(text);
-    if (loss) out.lossPct = Number(loss[1]);
-    if (stats) { out.received = Number(stats[1]); out.sent = out.received + Number(stats[2]); }
-    if (rtt) { out.min = Number(rtt[1]); out.max = Number(rtt[2]); out.avg = Number(rtt[3]); }
-  } else {
-    const loss = /(\d+(?:\.\d+)?)%\s*packet loss/i.exec(text);
-    const rtt = /rtt\s+min\/avg\/max\/mdev\s*=\s*([\d.]+)\/([\d.]+)\/([\d.]+)\/([\d.]+)/i.exec(text);
-    if (loss) out.lossPct = Number(loss[1]);
-    if (rtt) { out.min = Number(rtt[1]); out.avg = Number(rtt[2]); out.max = Number(rtt[3]); }
+  const src = String(text || '');
+  const lines = src.split(/\r?\n/);
+
+  /* 各平台 / 各语言的回显行：
+     Windows 中文  来自 1.1.1.1 的回复: 字节=32 时间=12ms TTL=57
+     Windows 英文  Reply from 1.1.1.1: bytes=32 time=12ms TTL=57
+     Windows IPv6  来自 ::1 的回复: 时间<1ms
+     Linux         64 bytes from 1.1.1.1: icmp_seq=1 ttl=57 time=12.3 ms
+     只有 TTL、ms、数字和“来自 / Reply from”跨语言稳定，统计行本身会随系统语言变化，
+     所以成功与否以回显行计数为准，不再匹配 Received/Lost/Minimum 这些英文单词。 */
+  const rtts = [];
+  let replies = 0;
+  for (const line of lines) {
+    const ttl = /ttl\s*[=:]\s*(\d+)/i.exec(line);
+    const from = /^\s*(?:reply from|来自)/i.test(line);
+    const rtt = /([=<])\s*(\d+(?:\.\d+)?)\s*ms/i.exec(line);
+    /* 回显必须带时间；只有 “Reply from” 而没有 ms 的行是“无法访问目标主机”这类 ICMP 错误，不算成功。 */
+    if (!ttl && !(from && rtt)) continue;
+    replies += 1;
+    if (out.ttl == null && ttl) out.ttl = Number(ttl[1]);
+    if (rtt) rtts.push(rtt[1] === '<' ? 0.5 : Number(rtt[2]));
   }
-  const ttl = /TTL=(\d+)/i.exec(text);
-  if (ttl) out.ttl = Number(ttl[1]);
-  if (out.sent == null) {
-    const sent = /Sent\s*=\s*(\d+)/i.exec(text);
-    if (sent) out.sent = Number(sent[1]);
+
+  out.received = replies;
+  if (rtts.length) {
+    out.min = Math.min(...rtts);
+    out.max = Math.max(...rtts);
+    out.avg = Math.round((rtts.reduce((a, b) => a + b, 0) / rtts.length) * 100) / 100;
+  }
+
+  const loss = /(\d+(?:\.\d+)?)\s*%/.exec(src);
+  if (loss) out.lossPct = Number(loss[1]);
+
+  const sent = /(?:sent|已发送)\s*[=:]\s*(\d+)/i.exec(src);
+  if (sent) out.sent = Number(sent[1]);
+  if (out.lossPct == null && out.sent) {
+    out.lossPct = Math.round(((out.sent - replies) / out.sent) * 100);
   }
   return out;
 }
@@ -1313,6 +1332,9 @@ const TARGETS_FILE = path.join(__dirname, '靶机限制', 'lab-targets.json');
 const LAB_WORDLIST = path.join(__dirname, '靶机限制', 'lab-wordlist.txt');
 const SQLMAP_OUTPUT = path.join(__dirname, 'tools', 'sqlmap-output');
 const SQLMAP_TIMEOUT = 240000;
+const NATIVE_MAX_ARGS = 96;
+const NATIVE_MAX_ARGS_CHARS = 4000;
+const TOOL_NATIVE_TIMEOUT = 240000;
 const HYDRA_TIMEOUT = 180000;
 const MSF_TIMEOUT = 180000;
 
@@ -1687,15 +1709,10 @@ async function toolkitStatus(force = false) {
   return data;
 }
 
-/* 真实 Nmap 调用：只接受合法的 host / ports，不做任意参数透传 */async function nmapRun(host, ports) {
-  const target = String(host || '').trim();
-  if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/.test(target)) {
-    return { ok: false, real: true, tool: 'nmap', error: 'invalid host' };
-  }
-  const portSpec = String(ports || '').trim();
-  if (portSpec && !/^[0-9,\-]{1,120}$/.test(portSpec)) {
-    return { ok: false, real: true, tool: 'nmap', error: 'invalid port list' };
-  }
+/* 真实 Nmap 调用。
+   - 带 - 开头的参数：整行原生透传（nmap -sV -p- --script vuln host）
+   - 不带参数 / 只有 host [ports]：沿用原来的安全默认（-Pn -sT），免管理员权限 */
+async function nmapRun(host, ports, rawCommand) {
   const entry = TOOLKIT.find(t => t.id === 'nmap');
   const file = findToolBinary(entry) || await commandExists('nmap');
   if (!file) {
@@ -1707,22 +1724,131 @@ async function toolkitStatus(force = false) {
       hint: 'unzip nmap-*-win32.zip into tools/nmap/'
     };
   }
-  const args = ['-Pn', '-sT', '--host-timeout', '60s'];
-  if (portSpec) args.push('-p', portSpec);
-  args.push(target);
+
+  const commandText = String(rawCommand == null ? '' : rawCommand).trim();
+  let args = [];
+  let mode = 'scan';
+  try {
+    if (commandText) {
+      const tokens = nativeTokens(commandText, 'nmap 参数');
+      if (tokens.length && tokens.some(token => token.startsWith('-'))) {
+        args = tokens;
+        mode = 'native';
+      } else {
+        host = tokens[0] || '';
+        ports = tokens[1] || '';
+      }
+    }
+  } catch (err) {
+    return { ok: false, real: true, tool: 'nmap', error: String(err && err.message || err) };
+  }
+
+  if (mode === 'native') {
+    if (!args.length) return { ok: false, real: true, tool: 'nmap', error: 'nmap 需要至少一个参数' };
+    /* 允许 nmap host -sV 的写法：把开头的目标挪到选项后面，兼容不自动重排参数的 nmap 构建 */
+    const leadingTargets = [];
+    while (args.length && !args[0].startsWith('-')) leadingTargets.push(args.shift());
+    args = [...args, ...leadingTargets];
+  } else {
+    const target = String(host || '').trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$/.test(target)) {
+      return { ok: false, real: true, tool: 'nmap', error: 'invalid host' };
+    }
+    const portSpec = String(ports || '').trim();
+    if (portSpec && !/^[0-9,\-]{1,120}$/.test(portSpec)) {
+      return { ok: false, real: true, tool: 'nmap', error: 'invalid port list' };
+    }
+    args = ['-Pn', '-sT', '--host-timeout', '60s'];
+    if (portSpec) args.push('-p', portSpec);
+    args.push(target);
+    host = target;
+  }
+
+  const timeout = mode === 'native' ? 240000 : 150000;
   const started = Date.now();
-  const result = await run(file, args, { timeout: 150000, maxBuffer: 8 * 1024 * 1024 });
+  const result = await run(file, args, { timeout, maxBuffer: 8 * 1024 * 1024 });
   return {
     ok: result.ok,
     real: true,
     tool: 'nmap',
+    mode,
     command: [file, ...args].map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' '),
-    target,
+    target: mode === 'native' ? null : host,
+    args,
     exitCode: result.code,
     durationMs: Date.now() - started,
     stdout: limitText(result.stdout),
     stderr: limitText(result.stderr),
     error: result.ok ? null : (result.error || 'nmap failed')
+  };
+}
+
+/* 任意已登记工具的原生调用：tool <name> [原生参数…]
+   只允许 TOOLKIT 里登记的工具，或 tools/ 下同名二进制；不走 shell，参数按数组传。 */
+async function resolveToolById(nameValue) {
+  const name = String(nameValue || '').trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)) return { error: 'invalid tool name' };
+  const entry = TOOLKIT.find(t => t.id === name || String(t.bin).toLowerCase() === name);
+  if (entry && entry.id === 'sqlmap') {
+    const python = await resolvePython();
+    const sql = await resolveSqlmap(python);
+    if (!sql.available) return { entry, error: sql.error, hint: 'pip install sqlmap --target tools/sqlmap' };
+    return { entry, file: sql.file, prefix: sql.prefix || [], via: sql.via };
+  }
+  if (entry && entry.id === 'volatility') {
+    const volPath = path.join(TOOLS_DIR, 'py', 'bin', IS_WIN ? 'vol.exe' : 'vol');
+    if (fs.existsSync(volPath)) return { entry, file: volPath, prefix: [], via: 'tools/py' };
+    const fallback = findToolBinary(entry) || await commandExists(entry.bin);
+    if (fallback) return { entry, file: fallback, prefix: [], via: 'PATH' };
+    return { entry, error: 'volatility not found', hint: entry.hint };
+  }
+  if (entry) {
+    const file = findToolBinary(entry) || await commandExists(entry.bin);
+    if (!file) return { entry, error: `${entry.name} not found`, hint: entry.hint };
+    const via = file.includes(`${path.sep}tools${path.sep}`) ? 'tools/' : 'PATH';
+    return { entry, file, prefix: [], via };
+  }
+  const local = findLocalBinary(name);
+  if (local) return { entry: { id: name, name, bin: name }, file: local, prefix: [], via: 'tools/' };
+  return { error: `unknown tool: ${name}`, hint: 'toolkit 查看已登记工具，或把二进制放进 tools/' };
+}
+
+async function toolRun(name, rawCommand) {
+  const resolved = await resolveToolById(name);
+  if (resolved.error) {
+    return { ok: false, real: true, tool: String(name || ''), error: resolved.error, hint: resolved.hint };
+  }
+  const label = `${resolved.entry.id} 参数`;
+  let tokens;
+  try {
+    tokens = nativeTokens(rawCommand, label);
+  } catch (err) {
+    return { ok: false, real: true, tool: resolved.entry.id, error: String(err && err.message || err) };
+  }
+  if (!tokens.length) {
+    return {
+      ok: false,
+      real: true,
+      tool: resolved.entry.id,
+      error: 'missing arguments',
+      hint: `usage: tool ${resolved.entry.id} <原生参数…>`
+    };
+  }
+  const args = [...(resolved.prefix || []), ...tokens];
+  const started = Date.now();
+  const result = await run(resolved.file, args, { timeout: TOOL_NATIVE_TIMEOUT, maxBuffer: 16 * 1024 * 1024 });
+  return {
+    ok: result.ok,
+    real: true,
+    tool: resolved.entry.id,
+    via: resolved.via,
+    command: [resolved.file, ...args].map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' '),
+    args,
+    exitCode: result.code,
+    durationMs: Date.now() - started,
+    stdout: limitText(result.stdout),
+    stderr: limitText(result.stderr),
+    error: result.ok ? null : (result.error || `${resolved.entry.id} failed`)
   };
 }
 
@@ -1840,14 +1966,119 @@ function parseSqlmap(rawText) {
   return out;
 }
 
-async function sqlmapAttack(targetId, adhocUrl) {
-  const adhoc = parseAdhocTarget(adhocUrl);
-  if (adhoc.error) return { ok: false, real: true, tool: 'sqlmap', error: adhoc.error };
-  const resolved = adhoc.target
-    ? { target: adhoc.target, error: null }
-    : getTarget(targetId);
-  const { target, error: targetError } = resolved;
-  if (!target) return { ok: false, real: true, tool: 'sqlmap', error: targetError };
+/* 原生参数透传：把终端里的一行拆成 argv。
+   支持单/双引号；双引号内只把 \" 和 \\ 当转义，其余反斜杠原样保留
+   （--headers / --script-args 常需要字面量 \n、\ 等）。execFile 直接收数组，不经过 shell。 */
+function splitCliArgs(input, label = '参数') {
+  const text = String(input || '');
+  if (text.includes('\0')) throw new Error(`${label}包含非法字符`);
+  const out = [];
+  let buf = '';
+  let quote = null;
+  let has = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) { quote = null; continue; }
+      if (quote === '"' && ch === '\\' && (text[i + 1] === '"' || text[i + 1] === '\\')) {
+        buf += text[i + 1];
+        i += 1;
+        has = true;
+        continue;
+      }
+      buf += ch;
+      has = true;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; has = true; continue; }
+    if (/\s/.test(ch)) {
+      if (has) { out.push(buf); buf = ''; has = false; }
+      continue;
+    }
+    buf += ch;
+    has = true;
+  }
+  if (quote) throw new Error(`${label}的引号没有闭合`);
+  if (has) out.push(buf);
+  return out;
+}
+
+/* 统一的上限检查，所有工具的透传都走这里 */
+function nativeTokens(raw, label) {
+  const text = String(raw == null ? '' : raw).trim();
+  const tokens = splitCliArgs(text, label);
+  if (tokens.length > NATIVE_MAX_ARGS) throw new Error(`${label}过多（上限 ${NATIVE_MAX_ARGS} 个）`);
+  if (text.length > NATIVE_MAX_ARGS_CHARS) throw new Error(`${label}过长（上限 ${NATIVE_MAX_ARGS_CHARS} 字符）`);
+  return tokens;
+}
+
+/* 支持三种写法：
+     sqlmap http://host/item?id=1 --dbs
+     sqlmap -u "http://host/item?id=1" --dbs
+     sqlmap --url=http://host/item?id=1 --dbs
+   第一个裸 URL 只认第一个 token，避免把 --referer 的值误当目标。 */
+function splitSqlmapCommand(rawCommand) {
+  const tokens = nativeTokens(rawCommand, 'sqlmap 参数');
+  let url = '';
+  const args = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token === '-u' || token === '--url') {
+      if (url) throw new Error('sqlmap 只能指定一个目标 URL');
+      url = String(tokens[i + 1] || '').trim();
+      i += 1;
+      continue;
+    }
+    if (token.startsWith('--url=')) {
+      if (url) throw new Error('sqlmap 只能指定一个目标 URL');
+      url = token.slice('--url='.length).trim();
+      continue;
+    }
+    args.push(token);
+  }
+  if (!url && args.length && /^https?:\/\//i.test(args[0])) url = args.shift();
+  return { url, args };
+}
+
+async function sqlmapAttack(targetId, adhocUrl, rawCommand) {
+  const commandText = String(rawCommand == null ? '' : rawCommand).trim();
+  let url = String(adhocUrl || '').trim();
+  let passthrough = [];
+  if (commandText) {
+    let parsed;
+    try {
+      parsed = splitSqlmapCommand(commandText);
+    } catch (err) {
+      return { ok: false, real: true, tool: 'sqlmap', error: String(err && err.message || err) };
+    }
+    if (url && parsed.url && url !== parsed.url) {
+      return { ok: false, real: true, tool: 'sqlmap', error: '目标 URL 只能指定一次（url 参数与命令行冲突）' };
+    }
+    url = parsed.url || url;
+    passthrough = parsed.args;
+  }
+
+  let target = null;
+  let targetError = null;
+  if (url) {
+    const adhoc = parseAdhocTarget(url);
+    if (adhoc.error) return { ok: false, real: true, tool: 'sqlmap', error: adhoc.error };
+    target = adhoc.target;
+  } else {
+    const resolved = getTarget(targetId);
+    target = resolved.target;
+    targetError = resolved.error;
+  }
+  if (!target) {
+    return {
+      ok: false,
+      real: true,
+      tool: 'sqlmap',
+      error: commandText
+        ? 'sqlmap 需要一个完整 URL（含查询参数），例如 http://host/item?id=1'
+        : targetError
+    };
+  }
   const tools = await attackTools();
   const entry = tools.tools.sqlmap;
   if (!entry.available) {
@@ -1866,14 +2097,13 @@ async function sqlmapAttack(targetId, adhocUrl) {
   const targetUrl = `${target.base}${target.sqlmapPath}`;
   let file;
   let args;
-  const common = [
-    '-u', targetUrl,
-    '--batch',
-    '--disable-coloring',
+  /* 固定项先放：--output-dir / --batch 可以被后面的用户参数覆盖，保证无 TTY 时不卡交互。
+     没有透传参数时保留原来的自动枚举；带了参数就完全按原生 sqlmap 语义执行。 */
+  const fixed = ['-u', targetUrl, '--batch', '--disable-coloring', '--output-dir', SQLMAP_OUTPUT];
+  const defaults = [
     '--flush-session',
     '--level=1',
     '--risk=1',
-    '--output-dir', SQLMAP_OUTPUT,
     '--banner',
     '--current-user',
     '--current-db',
@@ -1881,6 +2111,7 @@ async function sqlmapAttack(targetId, adhocUrl) {
     '--dbs',
     '--tables'
   ];
+  const common = passthrough.length ? [...fixed, ...passthrough] : [...fixed, ...defaults];
   if (vendored && python) {
     file = python.file;
     args = [vendored, ...common];
@@ -1904,6 +2135,7 @@ async function sqlmapAttack(targetId, adhocUrl) {
     target: targetUrl,
     targetId: target.id,
     adhoc: !!target.adhoc,
+    passthrough,
     note: target.hasQuery === false ? 'URL 没有查询参数，sqlmap 可能找不到可注入点' : null,
     exitCode: result.code,
     durationMs: Date.now() - started,
@@ -2064,6 +2296,7 @@ module.exports = {
   buildFindings,
   attackTools,
   sqlmapAttack,
+  toolRun,
   hydraAttack,
   msfAttack,
   toolkitStatus,

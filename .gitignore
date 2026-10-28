@@ -21,5 +21,6 @@ tools/_dl/
 tools/sqlmap-output/
 tools/install-log.txt
 
-# 本机专用启动脚本（含本地凭据，不入库）
-local.credentials.bat
+# 本机演示脚本与出图，不入库
+AI算法演示.py
+AI算法演示_输出/

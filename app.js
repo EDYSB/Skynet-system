@@ -2955,7 +2955,7 @@
   const TERM_COMMANDS = [
     'help', 'status', 'events', 'event', 'focus', 'earth', 'map', 'net', 'refresh',
     'probe', 'ops', 'tools', 'recon', 'nmap', 'scan', 'web', 'vuln', 'audit', 'searchsploit',
-    'msf', 'lab', 'toolkit', 'sqlmap', 'sqli', 'payload', 'scope', 'target', 'report', 'hash',
+    'msf', 'msfconsole', 'hydra', 'lab', 'toolkit', 'tool', 'sqlmap', 'sqli', 'payload', 'scope', 'target', 'report', 'hash',
     'sys', 'systeminfo', 'ls', 'cat', 'ping', 'clear', 'banner', 'reboot',
     'cd', 'chdir', 'dir', 'type', 'cls', 'echo', 'pwd', 'tree', 'cartoon', 'python', 'py', 'run', 'start',
     'ipconfig', 'ver', 'tasklist', 'netstat',
@@ -3907,7 +3907,9 @@
       ['msf', 'native scanner console'],
       ['lab', 'tool readiness'],
       ['toolkit', 'all tools in tools/ + PATH'],
-      ['sqlmap [url]', 'real injection scan · 必须带参数'],
+      ['sqlmap <url> [args]', 'real injection scan · 原生参数透传'],
+      ['tool <name> [args]', 'tools/ 里任意工具 · 原生命令行'],
+      ['hydra / msfconsole', '原生 hydra / metasploit（装好后可用）'],
       ['payload <text>', 'real encoder + SHA-256'],
       ['scope / target / report', 'lab scope + real report'],
       ['clear / banner / reboot', 'terminal controls'],
@@ -3999,14 +4001,15 @@
     termLine('<span class="dim">────────────────────────────────────────────────────────</span>');
     const rows = [
       ['recon', 'host / OS / NIC / patch · REAL'],
-      ['nmap [ports]', '127.0.0.1 TCP connect · REAL'],
+      ['nmap [原生参数]', 'host [ports] 或原生 nmap · REAL'],
       ['web', 'local HTTP + TLS fingerprint · REAL'],
       ['audit', 'Defender / firewall / UAC / SMBv1 / RDP · REAL'],
       ['vuln', 'evidence-based findings · REAL'],
       ['searchsploit <q>', 'NVD 2.0 + CISA KEV · REAL'],
       ['msf', 'native scanner console · REAL'],
       ['lab', 'tool readiness'],
-      ['sqlmap [url]', 'real injection scan · REAL'],
+      ['sqlmap [url]', 'real injection scan · 原生参数 · REAL'],
+      ['tool <name> [args]', '任何 tools/ 工具 · 原生参数 · REAL'],
       ['payload <text>', 'real encoder + SHA-256 · REAL'],
       ['scope / target', 'loopback-only scope'],
       ['report', 'download real Markdown report']
@@ -4072,6 +4075,11 @@
     const value = String(arg || '').trim();
     const parts = value.split(/\s+/).filter(Boolean);
     const first = parts[0] || '';
+    /* 带任何 - 参数：整行按原生命令行透传给真实 nmap */
+    if (parts.some(part => part.startsWith('-'))) {
+      await termNmapReal('', '', value);
+      return;
+    }
     /* 形如 10.0.0.5 / host.example.com 时走真实 nmap；纯端口列表走本机 connect 扫描 */
     const looksLikeHost = first && !/^\d{1,5}(?:[,\-]\d{1,5})*$/.test(first) && /^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(first);
     if (looksLikeHost) {
@@ -4104,9 +4112,12 @@
     }
   }
 
-  async function termNmapReal(host, ports) {
-    termLine(`<span class="dim">[*] nmap ${escapeHtml(host)}${ports ? ` · ports ${escapeHtml(ports)}` : ''} · REAL</span>`);
-    const qs = `?host=${encodeURIComponent(host)}${ports ? `&ports=${encodeURIComponent(ports)}` : ''}`;
+  async function termNmapReal(host, ports, raw) {
+    const native = String(raw || '').trim();
+    termLine(`<span class="dim">[*] nmap ${escapeHtml(native || host)}${!native && ports ? ` · ports ${escapeHtml(ports)}` : ''} · REAL</span>`);
+    const qs = native
+      ? `?cmd=${encodeURIComponent(native)}`
+      : `?host=${encodeURIComponent(host)}${ports ? `&ports=${encodeURIComponent(ports)}` : ''}`;
     let d;
     try {
       d = await termApi(`/api/lab/nmap${qs}`);
@@ -4135,7 +4146,32 @@
       const detail = t.available ? `${t.via} · ${t.path}` : t.hint;
       termLine(`${mark} <span class="white">${escapeHtml(String(t.name).padEnd(18, ' '))}</span><span class="dim">${escapeHtml(detail)}</span>`);
     });
-    termLine('<span class="dim">[i] 已接入命令：sqlmap / nmap <host> [ports]；其余工具装进 tools/ 后可继续接</span>');
+    termLine('<span class="dim">[i] 已接入：sqlmap / nmap（支持原生参数）、tool &lt;name&gt; [原生参数…]；其余工具装进 tools/ 后即可用 tool 调用</span>');
+  }
+
+  /* 任意已登记工具的原生命令行：tool nmap -sV -Pn 127.0.0.1 */
+  async function termToolRun(arg) {
+    const raw = String(arg || '').trim();
+    if (!raw) {
+      termLine('<span class="warn">tool: missing tool name</span>');
+      termLine('<span class="dim">usage: tool &lt;name&gt; [原生参数…]   e.g. tool nmap -sV -Pn 127.0.0.1</span>');
+      termLine('<span class="dim">已登记工具见 toolkit（sqlmap / nmap / hydra / msfconsole / vol / ffuf …）</span>');
+      return;
+    }
+    const name = raw.split(/\s+/)[0];
+    const rest = raw.slice(name.length).trim();
+    termLine(`<span class="dim">[*] tool ${escapeHtml(name)} · 原生命令行</span>`);
+    let d;
+    try {
+      d = await termApi(`/api/lab/tool?name=${encodeURIComponent(name)}&cmd=${encodeURIComponent(rest)}`);
+    } catch (err) {
+      termLine(`tool: ${escapeHtml(String(err.message || err))}`);
+      return;
+    }
+    if (!d.command) { termToolUnavailable(d, name); return; }
+    termLine(`<span class="white">$ ${escapeHtml(d.command)}</span>`);
+    termToolOutput(`${d.stdout || ''}\n${d.stderr || ''}`, 60);
+    termLine(`<span class="${d.ok ? 'ok' : 'warn'}">[${d.ok ? '+' : '!'}]</span> exit ${d.exitCode} · ${d.durationMs}ms`);
   }
 
   async function termOpsWeb() {
@@ -4266,6 +4302,11 @@
 
   async function termOpsMsf(arg) {
     const raw = String(arg || '').trim();
+    /* 以 - 开头：当原生命令行交给 msfconsole（例如 msf -x "use ...; run; exit"） */
+    if (/^-/.test(raw)) {
+      await termToolRun(`msfconsole ${raw}`);
+      return;
+    }
     if (!termMsf) {
       termMsf = { module: null, rhosts: '127.0.0.1', rport: 8792 };
       const tools = (termFacts && termFacts.tools) || {};
@@ -4405,14 +4446,18 @@
     const raw = String(arg || '').trim();
     if (!raw) {
       termLine('<span class="warn">sqlmap: missing target</span>');
-      termLine('<span class="dim">usage: sqlmap &lt;url&gt;   e.g. sqlmap http://host/item?id=1</span>');
+      termLine('<span class="dim">usage: sqlmap &lt;url&gt; [任意 sqlmap 参数…]</span>');
+      termLine('<span class="dim">e.g. sqlmap "http://host/item?id=1" --random-agent --dbs</span>');
       return;
     }
-    const isUrl = /^https?:\/\//i.test(raw);
-    const query = isUrl
-      ? `?url=${encodeURIComponent(raw)}`
+    /* 整行原生透传：URL 开头、带 -u/--url，或带任何 - 参数 */
+    const looksNative = /^https?:\/\//i.test(raw)
+      || /(?:^|\s)(?:-u|--url)(?:=|\s)/i.test(raw)
+      || /(?:^|\s)--?[A-Za-z]/.test(raw);
+    const query = looksNative
+      ? `?cmd=${encodeURIComponent(raw)}`
       : `?target=${encodeURIComponent(raw)}`;
-    termLine(`<span class="dim">[*] sqlmap · ${isUrl ? escapeHtml(raw) : `target ${escapeHtml(raw)}`}</span>`);
+    termLine(`<span class="dim">[*] sqlmap · ${escapeHtml(raw)}</span>`);
     let d;
     try {
       d = await termApi(`/api/lab/attack/sqlmap${query}`);
@@ -4769,8 +4814,17 @@
       case 'msf':
         await termOpsMsf(arg);
         break;
+      case 'hydra':
+        await termToolRun(`hydra${arg ? ` ${arg}` : ''}`);
+        break;
+      case 'msfconsole':
+        await termToolRun(`msfconsole${arg ? ` ${arg}` : ''}`);
+        break;
       case 'lab':
         await termOpsLab();
+        break;
+      case 'tool':
+        await termToolRun(arg);
         break;
       case 'toolkit':
       case 'which':
