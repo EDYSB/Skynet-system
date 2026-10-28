@@ -25,8 +25,8 @@ const ROOT = __dirname;
 const PORT = Number(process.env.PORT) || 8792;
 const HOST = '0.0.0.0';
 
-const AUTH_USER = process.env.SKYNET_USER || 'operator';
-const AUTH_PASS = process.env.SKYNET_PASS || 'Skynet-Lab-8Q2x';
+const AUTH_USER = process.env.SKYNET_USER || 'EDY_POWERQ';
+const AUTH_PASS = process.env.SKYNET_PASS || 'EDYSB';
 const SESSION_TTL = 12 * 60 * 60 * 1000;
 const sessions = new Map();
 const loginAttempts = new Map();
@@ -480,7 +480,7 @@ function credentialPolicy() {
     ok: true,
     real: true,
     user: AUTH_USER,
-    usesDefaultCredential: AUTH_PASS === 'Skynet-Lab-8Q2x',
+    usesDefaultCredential: AUTH_PASS === 'EDYSB',
     credentialSource: process.env.SKYNET_PASS ? '环境变量 SKYNET_PASS' : '内置默认值（README 公开）',
     sessionTtlHours: SESSION_TTL / 3600000,
     cookie: { httpOnly: true, secure: false, sameSite: 'Lax', path: '/' },
