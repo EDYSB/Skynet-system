@@ -2957,7 +2957,7 @@
     'probe', 'ops', 'tools', 'recon', 'nmap', 'scan', 'web', 'vuln', 'audit', 'searchsploit',
     'msf', 'lab', 'toolkit', 'sqlmap', 'sqli', 'payload', 'scope', 'target', 'report', 'hash',
     'sys', 'systeminfo', 'ls', 'cat', 'ping', 'clear', 'banner', 'reboot',
-    'cd', 'chdir', 'dir', 'type', 'cls', 'echo', 'pwd', 'tree', 'cartoon', 'python', 'py',
+    'cd', 'chdir', 'dir', 'type', 'cls', 'echo', 'pwd', 'tree', 'cartoon', 'python', 'py', 'run', 'start',
     'ipconfig', 'ver', 'tasklist', 'netstat',
     'date', 'whoami', 'hostname', 'uptime', 'exit'
   ];
@@ -3203,6 +3203,15 @@
     return data;
   }
 
+  function termRenderPython(d) {
+    const out = String(d.stdout || '').replace(/\s+$/, '');
+    const errText = String(d.stderr || '').replace(/\s+$/, '');
+    if (out) out.split(/\r?\n/).slice(0, 60).forEach(line => termLine(escapeHtml(line)));
+    if (errText) errText.split(/\r?\n/).slice(0, 40).forEach(line => termLine(`<span class="err">${escapeHtml(line)}</span>`));
+    if (!out && !errText && d.ok) termLine('<span class="dim">(no output)</span>');
+    if (!d.ok) termLine(`<span class="dim">exit ${d.exitCode}${d.timedOut ? ' · timeout' : ''}</span>`);
+  }
+
   async function termPythonExec(code) {
     if (location.protocol === 'file:') { termLine('python: local service required · run start.bat', 'warn'); return; }
     if (!String(code || '').trim()) return;
@@ -3213,12 +3222,22 @@
       termLine(`python: ${escapeHtml(String(err.message || err))}`, 'err');
       return;
     }
-    const out = String(d.stdout || '').replace(/\s+$/, '');
-    const errText = String(d.stderr || '').replace(/\s+$/, '');
-    if (out) out.split(/\r?\n/).slice(0, 60).forEach(line => termLine(escapeHtml(line)));
-    if (errText) errText.split(/\r?\n/).slice(0, 40).forEach(line => termLine(`<span class="err">${escapeHtml(line)}</span>`));
-    if (!out && !errText && d.ok) termLine('<span class="dim">(no output)</span>');
-    if (!d.ok) termLine(`<span class="dim">exit ${d.exitCode}${d.timedOut ? ' · timeout' : ''}</span>`);
+    termRenderPython(d);
+  }
+
+  async function termPythonFile(rel, args) {
+    if (location.protocol === 'file:') { termLine('python: local service required · run start.bat', 'warn'); return; }
+    let d;
+    try {
+      d = await termPost('/api/python', { file: rel, args: args || [] });
+    } catch (err) {
+      termLine(`python: ${escapeHtml(String(err.message || err))}`, 'err');
+      return;
+    }
+    if (d.error && d.mode !== 'file') { termLine(`python: ${escapeHtml(d.error)}`, 'err'); return; }
+    const argText = (d.args && d.args.length) ? ` ${d.args.join(' ')}` : '';
+    termLine(`<span class="dim">$ python ${escapeHtml(d.file || rel)}${escapeHtml(argText)}</span> <span class="dim">· ${d.durationMs}ms · exit ${d.exitCode}</span>`);
+    termRenderPython(d);
   }
 
   async function termPython(arg) {
@@ -3227,6 +3246,11 @@
       termPyMode = true;
       termSyncPrompt();
       termLine('<span class="ok">Python 3</span> <span class="dim">· 每行独立执行（变量不跨行）· exit() 退出</span>');
+      return;
+    }
+    const tokens = code.split(/\s+/);
+    if (/\.py$/i.test(tokens[0])) {
+      await termPythonFile(termResolvePath(tokens[0]), tokens.slice(1));
       return;
     }
     await termPythonExec(code);
@@ -3395,7 +3419,77 @@
     }
   }
 
-  async function termType(target) {    if (!target) { termLine('type: missing file name', 'warn'); return; }
+  async function termRunFile(arg) {
+    if (location.protocol === 'file:') { termLine('run: local service required · run start.bat', 'warn'); return; }
+    const raw = String(arg || '').trim();
+    let target = '';
+    let startLine = 1;
+    if (raw.startsWith('"')) {
+      const close = raw.indexOf('"', 1);
+      if (close > 0) {
+        target = raw.slice(1, close);
+        startLine = Math.max(1, parseInt(raw.slice(close + 1).trim(), 10) || 1);
+      }
+    } else {
+      const tokens = raw.split(/\s+/).filter(Boolean);
+      target = tokens[0] || '';
+      startLine = Math.max(1, parseInt(tokens[1], 10) || 1);
+    }
+    if (!target) {
+      termLine('<span class="warn">run: missing file name</span>');
+      termLine('<span class="dim">usage: run &lt;file|C:\\path\\file&gt; [start line]   e.g. run app.js 120</span>');
+      termLine('<span class="dim">本机文件加引号：start "C:\\Windows\\System32\\drivers\\etc\\hosts"</span>');
+      return;
+    }
+    const isAbsolute = /^[A-Za-z]:[\\/]/.test(target);
+    const rel = isAbsolute ? target : termResolvePath(target);
+    const start = startLine;
+    let d;
+    try {
+      d = await termApi(isAbsolute
+        ? `/api/file-abs?path=${encodeURIComponent(rel)}`
+        : `/api/file?path=${encodeURIComponent(rel)}`);
+    } catch (err) {
+      termLine(`run: ${escapeHtml(String(err.message || err))}`, 'err');
+      return;
+    }
+    const content = String(d.content || '');
+    const all = content.split(/\r?\n/);
+    const total = all.length;
+    const LIMIT = 200;
+    const from = Math.min(start, total);
+    const slice = all.slice(from - 1, from - 1 + LIMIT);
+    const bytes = new TextEncoder().encode(content).length;
+    const name = String(rel).split(/[\\/]/).pop() || String(rel);
+    const right = ` ${termFormatBytes(bytes)} · ${total} lines `;
+    const W = Math.max(48, Math.min(74, name.length + right.length + 10));
+    const headCore = `─ ${name} `;
+    const fill = Math.max(2, W - 1 - headCore.length - right.length - 1);
+    const pad = n => String(n).padStart(4, ' ');
+
+    termLine(`<span class="ok">${escapeHtml(`┌${headCore}${'─'.repeat(fill)}${right}┐`)}</span>`);
+    slice.forEach((line, i) => {
+      const no = from + i;
+      const trimmed = line.trim();
+      const isComment = /^(\/\/|#|--|<!--|\/\*|\*)/.test(trimmed);
+      const body = isComment
+        ? `<span class="dim">${escapeHtml(line)}</span>`
+        : escapeHtml(line);
+      termLine(`<span class="dim">${pad(no)} │</span> ${body}`);
+    });
+    const last = from + slice.length - 1;
+    const more = last < total;
+    termLine(`<span class="ok">└${'─'.repeat(W - 2)}┘</span>`);
+    if (more) {
+      const quoted = isAbsolute ? `"${rel}"` : escapeHtml(rel);
+      termLine(`<span class="dim">${from}–${last} of ${total} lines · continue: </span><span class="white">run ${escapeHtml(quoted)} ${last + 1}</span>`);
+    } else {
+      termLine(`<span class="dim">${from}–${last} of ${total} lines · EOF</span>`);
+    }
+  }
+
+  async function termType(target) {
+    if (!target) { termLine('type: missing file name', 'warn'); return; }
     if (location.protocol === 'file:') { termLine('type: local service required · run start.bat', 'warn'); return; }
     const rel = termResolvePath(target);
     try {
@@ -3788,9 +3882,11 @@
       ['ls [path] / cat <file>', 'browse workspace'],
       ['cd <dir> / dir [path]', 'cmd-style navigation'],
       ['type <file>', 'print file (cmd style)'],
+      ['run <file> [line]', 'paged viewer · 项目内或 C:\\ 绝对路径'],
+      ['start <file>', 'same as run'],
       ['tree [path] [depth]', 'animated workspace scan · add --fast'],
       ['cartoon', '60s terminal animation · any key stops'],
-      ['python [code]', 'run python 3 (tools/python) · bare = REPL'],
+      ['python [code|file.py]', 'run python 3 · bare = REPL'],
       ['cls / echo / pwd', 'screen + shell helpers'],
       ['ipconfig', 'real adapter addresses + link rate'],
       ['ver', 'real Windows version / build'],
@@ -4721,6 +4817,10 @@
         break;
       case 'type':
         await termType(arg);
+        break;
+      case 'run':
+      case 'start':
+        await termRunFile(arg);
         break;
       case 'cls':
       case 'clr':

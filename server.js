@@ -634,6 +634,45 @@ function readTextFile(rel) {
   return { path: rel, content: fs.readFileSync(file, 'utf8') };
 }
 
+/* 绝对路径读取：只接受盘符开头的本机路径，仍限制文本类型与大小 */
+function readAbsoluteFile(rawPath) {
+  const raw = String(rawPath || '').trim().replace(/^"+|"+$/g, '');
+  if (!raw) return { error: 'missing path', code: 400 };
+  if (!/^[A-Za-z]:[\\/]/.test(raw)) return { error: 'absolute path expected (e.g. C:\\Windows\\... )', code: 400 };
+  const file = path.normalize(raw);
+  let stat;
+  try { stat = fs.statSync(file); } catch (e) { return { error: 'not found', code: 404 }; }
+  if (!stat.isFile()) return { error: 'not a file', code: 400 };
+  if (stat.size > 512 * 1024) return { error: 'file too large', code: 413 };
+  const ext = path.extname(file).toLowerCase();
+  const okExt = TEXT_EXT.has(ext)
+    || ['.ini', '.cfg', '.conf', '.xml', '.log', '.yml', '.yaml', '.csv', '.ps1', '.cmd', '.reg', '.env'].includes(ext);
+  let buf;
+  try { buf = fs.readFileSync(file); } catch (e) { return { error: 'read failed', code: 500 }; }
+  if (!okExt) {
+    /* 没有扩展名或未知扩展名：按字节嗅探，NUL 或不可打印比例高就当二进制 */
+    const sample = buf.subarray(0, 4096);
+    if (sample.includes(0)) return { error: 'binary or unsupported file', code: 415 };
+    let bad = 0;
+    for (const byte of sample) {
+      if (byte < 9 || (byte > 13 && byte < 32)) bad += 1;
+    }
+    if (sample.length && bad / sample.length > 0.1) {
+      return { error: 'binary or unsupported file', code: 415 };
+    }
+  }
+  let text = buf.toString('utf8');
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  return {
+    ok: true,
+    real: true,
+    path: file,
+    name: path.basename(file),
+    size: stat.size,
+    content: text
+  };
+}
+
 let auditCache = { at: 0, data: null, pending: null };
 
 /**
@@ -1365,14 +1404,37 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 400, { ok: false, error: 'invalid json' });
       return;
     }
-    const out = await lab.runPython(body && body.code);
-    if (!out.ok && out.stderr) console.warn(`[python] exit ${out.exitCode} · ${String(body.code).slice(0, 120)}`);
+    const reqFile = body && typeof body.file === 'string' ? body.file.trim() : '';
+    const reqCode = body && typeof body.code === 'string' ? body.code : '';
+    if (!reqFile && !reqCode.trim()) {
+      console.warn(`[python] 空请求 · 来源 ${clientIp(req)} · body=${JSON.stringify(body).slice(0, 160)}`);
+      sendJSON(res, 400, { ok: false, real: true, error: 'missing code or file · 传 {code} 或 {file}' });
+      return;
+    }
+    const out = reqFile
+      ? await lab.runPythonFile(reqFile, Array.isArray(body.args) ? body.args : [])
+      : await lab.runPython(reqCode);
+    if (!out.ok) console.warn(`[python] exit ${out.exitCode} · ${String(reqFile || reqCode).slice(0, 120)}`);
     sendJSON(res, 200, out);
     return;
   }
 
   if (url.pathname === '/api/file') {
     const result = readTextFile(url.searchParams.get('path') || '');
+    if (result.error) sendJSON(res, result.code || 400, { error: result.error });
+    else sendJSON(res, 200, result);
+    return;
+  }
+
+  /* 读取本机任意绝对路径文件：默认只允许本机来源，SKYNET_FILES_REMOTE=1 才放开 */
+  if (url.pathname === '/api/file-abs') {
+    const allowRemote = String(process.env.SKYNET_FILES_REMOTE || '') === '1';
+    if (!allowRemote && !loopbackOrSelfClient(req)) {
+      console.warn(`[files] 拒绝远程读取 · 来源 ${clientIp(req)}`);
+      sendJSON(res, 403, { ok: false, real: true, error: '本机文件读取只允许本机来源（设 SKYNET_FILES_REMOTE=1 可放开）' });
+      return;
+    }
+    const result = readAbsoluteFile(url.searchParams.get('path') || '');
     if (result.error) sendJSON(res, result.code || 400, { error: result.error });
     else sendJSON(res, 200, result);
     return;

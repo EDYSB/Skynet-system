@@ -63,11 +63,14 @@ function run(file, args, options = {}) {
       });
     };
     try {
-      execFile(file, args, {
+      const spawnOptions = {
         timeout: options.timeout || 15000,
         windowsHide: true,
         maxBuffer: options.maxBuffer || 4 * 1024 * 1024
-      }, (err, stdout, stderr) => {
+      };
+      if (options.cwd) spawnOptions.cwd = options.cwd;
+      if (options.env) spawnOptions.env = options.env;
+      execFile(file, args, spawnOptions, (err, stdout, stderr) => {
         resolve({
           ok: !err,
           code: err ? (typeof err.code === 'number' ? err.code : -1) : 0,
@@ -1529,6 +1532,57 @@ async function runPython(code, timeoutMs = 15000) {
   };
 }
 
+/* 执行工作区里的 .py 文件 */
+/* 用 runpy 包一层：便携版 Python 的 _pth 会忽略 PYTHONPATH，
+   直接跑文件时脚本自身目录不在 sys.path，import 同目录模块会失败 */
+const PY_RUN_WRAP = [
+  'import sys, os, runpy',
+  'target = sys.argv[1]',
+  'sys.argv = [target] + sys.argv[2:]',
+  'sys.path.insert(0, os.path.dirname(os.path.abspath(target)))',
+  'runpy.run_path(target, run_name="__main__")'
+].join('; ');
+
+async function runPythonFile(relPath, args = [], timeoutMs = 30000) {
+  const raw = String(relPath == null ? '' : relPath).trim();
+  if (!raw) return { ok: false, real: true, error: 'missing file' };
+  if (!/\.py$/i.test(raw)) return { ok: false, real: true, error: 'only .py files can be run' };
+  const abs = path.resolve(__dirname, raw);
+  const rel = path.relative(__dirname, abs);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    return { ok: false, real: true, error: 'path outside workspace' };
+  }
+  if (!fs.existsSync(abs)) return { ok: false, real: true, error: `file not found: ${raw}` };
+  const py = await resolvePython();
+  if (!py) return { ok: false, real: true, error: 'python 3 not found', hint: 'put the embeddable build under tools/python/' };
+  const argv = ['-c', PY_RUN_WRAP, abs].concat(Array.isArray(args) ? args.slice(0, 8).map(String) : []);
+  /* 在脚本所在目录执行；同时用 runpy 包一层，把脚本目录塞进 sys.path
+     （便携版 Python 的 _pth 会忽略 PYTHONPATH，直接跑文件时 import 同目录模块会失败） */
+  const scriptDir = path.dirname(abs);
+  const started = Date.now();
+  const result = await run(py.file, argv, {
+    timeout: timeoutMs,
+    maxBuffer: 8 * 1024 * 1024,
+    cwd: scriptDir
+  });
+  const timedOut = /timed? ?out|ETIMEDOUT|killed/i.test(result.error || '');
+  return {
+    ok: result.ok,
+    real: true,
+    mode: 'file',
+    python: py.version,
+    via: py.name,
+    file: rel.replace(/\\/g, '/'),
+    args: argv.slice(1),
+    durationMs: Date.now() - started,
+    exitCode: result.code,
+    timedOut,
+    stdout: limitText(result.stdout, 20000),
+    stderr: limitText(result.stderr, 20000),
+    error: result.ok ? null : (timedOut ? `timeout after ${timeoutMs} ms` : (result.error || 'python failed'))
+  };
+}
+
 function findFileUnder(root, fileName, maxDepth = 3) {
   if (!fs.existsSync(root)) return null;
   const queue = [{ dir: root, depth: 0 }];
@@ -2010,5 +2064,6 @@ module.exports = {
   msfAttack,
   toolkitStatus,
   nmapRun,
-  runPython
+  runPython,
+  runPythonFile
 };

@@ -172,10 +172,12 @@ http://127.0.0.1:8792/
 | `ls` / `cat README.md` | 浏览项目文件 |
 | `cd <dir>` / `dir [path]` | cmd 风格切换目录、列目录（受限于项目目录） |
 | `type <file>` | cmd 风格读取文件 |
+| `run <file> [line]` | 带行号的分页查看器，每页 200 行；支持本机绝对路径 |
+| `start <file>` | 同 `run`，打开文件 |
 | `cls` / `echo` / `pwd` | 清屏 / 回显 / 当前路径 |
 | `tree [path] [depth]` | 动画目录树（扫描进度条 + 生长效果），`--fast` 跳过动画 |
 | `cartoon` | 60 秒二进制雨：0/1 满屏滚动，20fps，任意键中止 |
-| `python [code]` | 跑 Python 3（优先 `tools/python`）；不带参数进入 REPL，`exit()` 退出 |
+| `python [code\|file.py]` | 跑代码或工作区里的 `.py` 文件（可带参数）；不带参数进 REPL |
 | `ping <host>` | 真实 ICMP 延迟；ICMP 被过滤时退回真实 TCP 握手延迟 |
 | `probe` | 本机探针状态 |
 | `clear` / `banner` / `reboot` | 终端控制 |
