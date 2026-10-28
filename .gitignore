@@ -18,4 +18,5 @@ tools/python/
 tools/py/
 tools/sqlmap/
 tools/_dl/
-tools/sqlmap-output/tools/install-log.txt
+tools/sqlmap-output/
+tools/install-log.txt
