@@ -1507,6 +1507,9 @@ async function resolvePython() {
   return null;
 }
 
+/* Python 输出统一走 UTF-8，否则 Windows 下中文会按 cp936 输出，终端拿到就是乱码 */
+const PY_ENV = Object.assign({}, process.env, { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' });
+
 /* 在终端里跑一段 Python：一次性执行，带超时与输出上限 */
 async function runPython(code, timeoutMs = 15000) {
   const src = String(code == null ? '' : code);
@@ -1515,7 +1518,7 @@ async function runPython(code, timeoutMs = 15000) {
   const py = await resolvePython();
   if (!py) return { ok: false, real: true, error: 'python 3 not found', hint: 'put the embeddable build under tools/python/' };
   const started = Date.now();
-  const result = await run(py.file, ['-c', src], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 });
+  const result = await run(py.file, ['-c', src], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, env: PY_ENV });
   const timedOut = /timed? ?out|ETIMEDOUT|killed/i.test(result.error || '');
   return {
     ok: result.ok,
@@ -1563,7 +1566,8 @@ async function runPythonFile(relPath, args = [], timeoutMs = 30000) {
   const result = await run(py.file, argv, {
     timeout: timeoutMs,
     maxBuffer: 8 * 1024 * 1024,
-    cwd: scriptDir
+    cwd: scriptDir,
+    env: PY_ENV
   });
   const timedOut = /timed? ?out|ETIMEDOUT|killed/i.test(result.error || '');
   return {

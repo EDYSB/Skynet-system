@@ -72,3 +72,14 @@ Wireshark（含 Npcap）、Burp Suite Community、Nessus、Autopsy、CherryTree�
 ## 不接的两项
 
 SET（Social-Engineer Toolkit）和 Gophish 是钓鱼/凭据收集框架，不进这个目录——面板监听 `0.0.0.0`、口令是公开默认值，接进来等于给同网段的人一套现成钓鱼后台。要学这类内容，自己在隔离虚拟机里单独装。
+## 给便携 Python 装第三方包
+
+`tools\python` 是 embeddable 版，没有 pip、也读不到系统 site-packages。做法是用系统 Python 下载到它的 site-packages：
+
+```
+python -m pip install numpy --target tools\python\Lib\site-packages -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+然后 `tools\python\python312._pth` 里要有一行 `Lib\site-packages`（已加）。
+
+已装：numpy 2.5.4。
