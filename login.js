@@ -191,7 +191,7 @@
   function speakWelcome() {
     if (!voiceOn || !('speechSynthesis' in window)) return;
     try {
-      const utter = new SpeechSynthesisUtterance('身份核验通过。欢迎回来，EDY_POWERQ。');
+      const utter = new SpeechSynthesisUtterance('身份核验通过。欢迎回来，operator。');
       utter.lang = 'zh-CN';
       utter.rate = 0.92;
       utter.pitch = 0.82;
@@ -207,7 +207,7 @@
   function showVerified(user) {
     panel.classList.add('verified');
     verify.setAttribute('aria-hidden', 'false');
-    verifyUser.textContent = user || 'EDY_POWERQ';
+    verifyUser.textContent = user || 'operator';
     const lines = [
       ['[ OK ] credential hash verified', 'ok'],
       ['[ OK ] operator recognized', 'ok'],
@@ -304,7 +304,7 @@
   form.addEventListener('submit', submit);
 
   // 浏览器自动填充/旧口令容易造成“看起来输对了但进不去”
-  userInput.value = 'EDY_POWERQ';
+  userInput.value = 'operator';
   passInput.value = '';
   userInput.addEventListener('focus', () => userInput.select());
   passInput.addEventListener('focus', () => passInput.select());
@@ -322,7 +322,7 @@
   typeConsole();
   clock();
   const hostEl = $('#gateHost');
-  if (hostEl) hostEl.textContent = `EDY_POWERQ / ${location.host}`;
+  if (hostEl) hostEl.textContent = `operator / ${location.host}`;
   setInterval(clock, 1000);
   requestAnimationFrame(draw);
   window.addEventListener('resize', resize);
